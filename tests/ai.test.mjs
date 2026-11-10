@@ -64,7 +64,7 @@ test('successful AI output supplements an unchanged rules plan and sends only se
     assert.equal(url, 'https://api.deepseek.com/chat/completions');
     assert.equal(init.method, 'POST');
     assert.equal(init.headers.Authorization, `Bearer ${SECRET}`);
-    assert.equal(init.redirect, 'error');
+    assert.equal(init.redirect, 'manual');
     requestBody = JSON.parse(init.body);
     return upstream(advice);
   }, {}, input);
@@ -135,6 +135,34 @@ test('provider status failures return safe rules output with no raw diagnostics 
       assert.match(plan.generation.reason, status === 429 ? /繁忙/ : /暂不可用/);
     });
   }
+});
+
+test('the request works with Workers fetch that rejects redirect:error', async () => {
+  let calls = 0;
+  const cloudflareFetch = async (_, init) => {
+    if (init.redirect === 'error') throw new TypeError('Unsupported redirect mode');
+    assert.equal(init.redirect, 'manual');
+    calls += 1;
+    return upstream();
+  };
+  await assert.rejects(cloudflareFetch('https://api.deepseek.com/chat/completions', { redirect: 'error' }), TypeError);
+  const plan = await generate(cloudflareFetch);
+  assert.equal(plan.generation.mode, 'ai');
+  assert.equal(calls, 1);
+});
+
+test('provider redirects fall back without following Location or forwarding credentials', async (t) => {
+  for (const status of [301, 302, 303, 307, 308]) await t.test(String(status), async () => {
+    const calls = [];
+    const plan = await generate(async (url, init) => {
+      calls.push({ url, authorization: init.headers.Authorization });
+      assert.equal(init.redirect, 'manual');
+      return new Response(null, { status, headers: { Location: 'https://attacker.invalid/collect' } });
+    });
+    assert.deepEqual(calls, [{ url: 'https://api.deepseek.com/chat/completions', authorization: `Bearer ${SECRET}` }]);
+    assertRules(plan);
+    assert.doesNotMatch(JSON.stringify(plan), /attacker\.invalid/);
+  });
 });
 
 test('network failures and aborted requests return safe rules output', async () => {

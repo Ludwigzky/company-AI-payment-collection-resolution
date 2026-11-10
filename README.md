@@ -79,7 +79,7 @@ npm run build
 Invoke-RestMethod 'http://127.0.0.1:4173/api/health'
 ```
 
-截至 2026 年 11 月 10 日，`npm test` 的 94 项测试（含打包后的 Worker 测试）及 `npm run check` 已通过；另已完成真实 `GET /models` 鉴权检查及一次虚构设备案例的完整 AI 生成验证：HTTP 200、正常结束、4 轨建议通过 schema 与来源 ID 校验。该单例不代表所有场景质量均已验证。浏览器视觉排版、生成与回退提示、剪贴板、实际下载、打印及移动端交互仍待复核。完整检查步骤见 [DeepSeek 接入说明](docs/DEEPSEEK_INTEGRATION.md)。
+截至 2026 年 11 月 10 日，`npm test` 的 101 项测试（含打包后的 Worker 测试）及 `npm run check` 已通过；另已完成真实 `GET /models` 鉴权检查及一次虚构设备案例的完整 AI 生成验证：HTTP 200、正常结束、4 轨建议通过 schema 与来源 ID 校验。该单例不代表所有场景质量均已验证。浏览器视觉排版、生成与回退提示、剪贴板、实际下载、打印及移动端交互仍待复核。完整检查步骤见 [DeepSeek 接入说明](docs/DEEPSEEK_INTEGRATION.md)。
 
 ## 后续工作
 

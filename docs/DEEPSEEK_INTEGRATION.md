@@ -70,6 +70,8 @@ npm run dev
 
 服务端固定使用 `POST https://api.deepseek.com/chat/completions`，以运行时密钥构造 Bearer 鉴权头，禁止重定向。请求体包含：
 
+上游请求采用 `redirect: 'manual'`，遇到 3xx 即回退，不跟随 `Location`，也不向新地址转发密钥。Workers 不支持标准 Fetch 的 `redirect: 'error'`；兼容处理及重定向测试应保留。[Cloudflare Request 文档](https://developers.cloudflare.com/workers/runtime-apis/request/)
+
 ```json
 {
   "model": "deepseek-flash",
@@ -160,7 +162,7 @@ Invoke-RestMethod 'http://127.0.0.1:4173/api/health'
 
 配置真实性可在受控服务端环境用 Bearer 鉴权请求 `GET https://api.deepseek.com/models`，确认 HTTP 状态及 `data` 中的模型 ID；不要输出请求头或密钥。该接口不生成内容，成功不证明余额充足或完整聊天流程可用。[官方模型列表接口](https://api-docs.deepseek.com/api/list-models/)
 
-截至 2026 年 11 月 10 日，`npm test` 的 94 项测试（含打包后的 Worker 测试）及 `npm run check` 已通过；另已完成真实 `GET /models` 鉴权检查及一次虚构设备案例的完整生成验证：HTTP 200、`finish_reason: stop`、`generation.mode: ai`，4 轨建议通过 schema 与来源 ID 校验。该单例不代表其他场景质量、法律准确率或生产可用性均已验证。
+截至 2026 年 11 月 10 日，`npm test` 的 101 项测试（含打包后的 Worker 测试）及 `npm run check` 已通过；另已完成真实 `GET /models` 鉴权检查及一次虚构设备案例的完整生成验证：HTTP 200、`finish_reason: stop`、`generation.mode: ai`，4 轨建议通过 schema 与来源 ID 校验。该单例不代表其他场景质量、法律准确率或生产可用性均已验证。
 
 复验真实生成时，应使用虚构数据在站点点击“使用 AI 生成”，确认 `generation.mode` 为 `ai`、分析及分轨内容完整、来源均来自固定目录，并核对复制和导出保留 AI 标识。若回退，应按页面提示记录非敏感状态，修正后再由人工决定是否重试。
 

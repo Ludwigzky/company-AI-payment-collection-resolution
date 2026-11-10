@@ -198,7 +198,9 @@ export async function generateAIPlan(input, env = {}, options = {}) {
           response_format: { type: 'json_object' }, max_tokens: 3000, stream: false,
         }),
         signal: controller.signal,
-        redirect: 'error',
+        // Workers supports manual redirects but rejects redirect: 'error'.
+        // Returning 3xx directly keeps credentials on this fixed endpoint.
+        redirect: 'manual',
       });
       if (!response.ok) {
         // Do not read or expose upstream errors: they may contain credentials,
