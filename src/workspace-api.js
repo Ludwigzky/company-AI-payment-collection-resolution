@@ -1,6 +1,6 @@
 import { generateAIPlan, InputError } from './ai.js';
 import { validateMaterial, prepareMaterials, MaterialError } from './materials.js';
-import { RecordError, ATTACHMENT_LIMITS, listRecords, createRecord, getRecord, updateRecord, addAttachment, getAttachment, removeAttachment, saveRun, addNote } from './records.js';
+import { RecordError, ATTACHMENT_LIMITS, listRecords, createRecord, getRecord, updateRecord, addAttachment, getAttachment, removeAttachment, saveRun, deleteRun, restoreRun, addNote } from './records.js';
 
 const JSON_LIMIT = 32 * 1024;
 const UPLOAD_LIMIT = ATTACHMENT_LIMITS.fileBytes + 64 * 1024;
@@ -148,6 +148,10 @@ export async function handleWorkspaceAPI(request, env, options = {}) {
       if (path.length === 4 && method === 'POST') return await upload(request, env, owner, recordId);
       if (path.length === 5 && method === 'DELETE') return json({ record: await removeAttachment(env, owner, recordId, path[4]) });
       if (path.length === 6 && path[5] === 'content' && method === 'GET') return await download(request, env, owner, recordId, path[4]);
+    }
+    if (path[3] === 'runs') {
+      if (path.length === 5 && method === 'DELETE') return json(await deleteRun(env, owner, recordId, path[4], await readJSON(request)));
+      if (path.length === 6 && path[5] === 'restore' && method === 'POST') return json(await restoreRun(env, owner, recordId, path[4], await readJSON(request)));
     }
     if (path.length === 4 && path[3] === 'analyze' && method === 'POST') return await analyze(request, env, owner, recordId, options);
     if (path.length === 4 && path[3] === 'notes' && method === 'POST') {

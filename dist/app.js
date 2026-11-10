@@ -13,6 +13,9 @@ const selectedRuns = new Map();
 const noteDrafts = new Map();
 const running = new Map();
 const runErrors = new Map();
+const runOperationNotices = new Map();
+let deleteRunTarget = null;
+let runOperationBusy = false;
 let active = null;
 let summaries = [];
 let dirty = false;
@@ -117,18 +120,32 @@ function fillForm(record) {
 function mergedItems(previous = [], received = []) {
   return [...new Map([...previous, ...received].map((item) => [item.id, item])).values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
+function activeRuns(record = active) { return (record?.runs || []).filter((run) => !run.deletedAt); }
+function runOrdinal(record, run) { return (record?.runs || []).length - (record?.runs || []).findIndex((item) => item.id === run.id); }
+function mergedRuns(previous = [], received = []) {
+  const merged = new Map(previous.map((run) => [run.id, run]));
+  for (const run of received) {
+    const prior = merged.get(run.id);
+    // Visibility changes are independent of the case's input revision. A late
+    // analysis snapshot must not undo a later deletion or restoration.
+    const preferred = prior && Number(prior.stateVersion || 0) > Number(run.stateVersion || 0) ? prior : run;
+    const other = preferred === prior ? run : prior;
+    merged.set(run.id, { ...other, ...preferred, plan: preferred.plan ?? other?.plan });
+  }
+  return [...merged.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.id).localeCompare(String(a.id)));
+}
 function acceptRecord(record) {
   if (!record?.id) throw new Error('记录响应不完整，请重新载入。');
   const previous = cache.get(record.id);
   // Late analysis responses must never replace more recent input or attachments.
   const previousIsNewer = previous && (previous.revision > record.revision || (previous.revision === record.revision && String(previous.updatedAt) > String(record.updatedAt)));
   const merged = previousIsNewer ? { ...previous } : { ...record };
-  merged.runs = mergedItems(previous?.runs, record.runs);
+  merged.runs = mergedRuns(previous?.runs, record.runs);
   merged.notes = mergedItems(previous?.notes, record.notes);
   merged.attachments ||= [];
   cache.set(record.id, merged);
   if (!selections.has(record.id)) selections.set(record.id, new Set(merged.attachments.map((item) => item.id)));
-  const summary = { id: merged.id, number: merged.number, title: merged.title, status: merged.status, revision: merged.revision, debtorName: merged.input?.debtorName, amount: merged.input?.amount, dueDate: merged.input?.dueDate, attachmentCount: merged.attachments.length, runCount: merged.runs.length, updatedAt: merged.updatedAt };
+  const summary = { id: merged.id, number: merged.number, title: merged.title, status: merged.status, revision: merged.revision, debtorName: merged.input?.debtorName, amount: merged.input?.amount, dueDate: merged.input?.dueDate, attachmentCount: merged.attachments.length, runCount: activeRuns(merged).length, updatedAt: merged.updatedAt };
   summaries = [summary, ...summaries.filter((item) => item.id !== record.id)].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   if (active?.id === merged.id) active = merged;
   renderHistory();
@@ -202,6 +219,13 @@ function renderControls() {
   $$('[data-case-tab]').forEach((node) => { node.disabled = navigating; });
   $$('.history-item').forEach((node) => { node.disabled = navigating; });
   $$('.remove-file').forEach((node) => { node.disabled = busy || archived || conflicted; });
+  const runBusy = busy || runOperationBusy || running.has(active?.id);
+  $('#delete-run').disabled = !currentRun() || runBusy || archived || conflicted;
+  $('#delete-run').title = archived ? '恢复案件后操作' : '';
+  $('#run-select').disabled = !activeRuns().length || busy || runOperationBusy;
+  $$('.restore-run').forEach((node) => { node.disabled = runBusy || archived || conflicted; node.title = archived ? '恢复案件后操作' : ''; });
+  $('#confirm-delete-run').disabled = runOperationBusy || busy || !deleteRunTarget;
+  $('#cancel-delete-run').disabled = runOperationBusy;
   form.inert = navigating || archived;
 }
 function renderHeader() {
@@ -211,7 +235,7 @@ function renderHeader() {
   $('#case-status').textContent = status; $('#case-status').className = 'status-tag' + (active?.status === 'archived' ? ' archived' : active ? '' : ' draft');
   $('#save-state').classList.toggle('unsaved', dirty);
   $('#save-state').textContent = conflicted ? '版本冲突 · 当前填写内容已保留' : dirty ? '有未保存修改 · 切换案件前自动保存' : active ? '已保存 · 最近更新 ' + dateTime(active.updatedAt) : '填写后保存，资料与方案将归档至本记录';
-  $('#attachment-count').textContent = active?.attachments?.length || 0; $('#run-count').textContent = active?.runs?.length || 0; $('#note-count').textContent = active?.notes?.length || 0;
+  $('#attachment-count').textContent = active?.attachments?.length || 0; $('#run-count').textContent = activeRuns().length; $('#note-count').textContent = active?.notes?.length || 0;
   renderControls();
 }
 function renderHistory() {
@@ -246,8 +270,8 @@ async function loadHistory({ initial = false } = {}) {
     if (sequence !== listSequence) return;
     summaries = (Array.isArray(payload.records) ? payload.records : []).map((summary) => {
       const known = cache.get(summary.id);
-      if (!known || (known.revision <= summary.revision && String(known.updatedAt) <= String(summary.updatedAt))) return summary;
-      return { ...summary, title: known.title, status: known.status, revision: known.revision, debtorName: known.input?.debtorName, amount: known.input?.amount, dueDate: known.input?.dueDate, attachmentCount: known.attachments.length, runCount: known.runs.length, updatedAt: known.updatedAt };
+      if (!known || known.revision < summary.revision || (known.revision === summary.revision && String(known.updatedAt) < String(summary.updatedAt))) return summary;
+      return { ...summary, title: known.title, status: known.status, revision: known.revision, debtorName: known.input?.debtorName, amount: known.input?.amount, dueDate: known.input?.dueDate, attachmentCount: known.attachments.length, runCount: activeRuns(known).length, updatedAt: known.updatedAt };
     }); renderHistory();
     if (initial && summaries.length && !active && !dirty && !navigating) await navigate(summaries[0].id);
   } catch (error) {
@@ -259,6 +283,7 @@ async function loadHistory({ initial = false } = {}) {
 }
 async function navigate(id = null, sample = false, reload = false) {
   if (navigating || (id && id === active?.id && !reload)) { showView('workspace'); return; }
+  closeDeleteRunDialog();
   navigating = true; renderControls();
   const previousId = active?.id;
   noteDrafts.set(previousId || 'draft', $('#note-body').value);
@@ -371,8 +396,8 @@ function previewAttachment(recordId, attachment) {
   $('#preview-dialog').showModal();
 }
 function currentRun() {
-  if (!active?.runs?.length) return null;
-  return active.runs.find((run) => run.id === selectedRuns.get(active.id)) || active.runs[0];
+  const runs = activeRuns();
+  return runs.find((run) => run.id === selectedRuns.get(active?.id)) || runs[0] || null;
 }
 function aiFor(plan) { return plan?.generation?.mode === 'ai' ? plan.ai : null; }
 const legalStatusNames = { conditional: '条件性建议', insufficient: '信息不足', not_applicable: '本案暂不适用' };
@@ -536,12 +561,22 @@ function renderPlanState() {
   renderControls();
 }
 function renderPlan() {
-  const runs = active?.runs || []; const run = currentRun(); const select = $('#run-select'); select.replaceChildren(); select.disabled = !runs.length;
+  const runs = activeRuns(); const run = currentRun(); const select = $('#run-select'); select.replaceChildren(); select.disabled = !runs.length;
   if (!runs.length) select.append(el('option', '', '暂无版本'));
-  runs.forEach((item, index) => { const option = el('option', '', '第 ' + (runs.length - index) + ' 版 · ' + dateTime(item.createdAt) + ' · 资料 v' + item.revision); option.value = item.id; option.selected = item.id === run?.id; select.append(option); });
+  runs.forEach((item) => { const option = el('option', '', '第 ' + runOrdinal(active, item) + ' 版 · ' + dateTime(item.createdAt) + ' · 资料 v' + item.revision); option.value = item.id; option.selected = item.id === run?.id; select.append(option); });
+  if (active) { if (run) selectedRuns.set(active.id, run.id); else selectedRuns.delete(active.id); }
   $('#plan-empty').hidden = Boolean(run); $('#plan-report').hidden = !run;
   $('#export-button').disabled = !run; $('#print-button').disabled = !run;
-  $('#plan-meta').textContent = run ? active.number + ' · 第 ' + (runs.length - runs.indexOf(run)) + ' 版 · ' + dateTime(run.createdAt) + ' · 当时资料版本 ' + run.revision : '保存并生成后可查看方案与版本记录';
+  if (!run) $('#print-report').textContent = '';
+  $('#plan-meta').textContent = run ? active.number + ' · 第 ' + runOrdinal(active, run) + ' 版 · ' + dateTime(run.createdAt) + ' · 当时资料版本 ' + run.revision : '保存并生成后可查看方案与版本记录';
+  const deleted = (active?.runs || []).filter((item) => item.deletedAt);
+  $('#plan-empty h3').textContent = deleted.length ? '暂无可查看的回款方案' : '尚未生成回款方案';
+  $('#plan-empty p').textContent = deleted.length ? '可在“已删除方案”中恢复历史版本，或生成新的回款方案。' : '补充欠款金额、付款到期日与项目现状，选择本次材料后生成。';
+  renderDeletedRuns(deleted);
+  const operationNotice = runOperationNotices.get(active?.id);
+  $('#run-operation-notice').hidden = !operationNotice;
+  $('#run-operation-notice').textContent = operationNotice || '';
+  $('#run-visibility-help').hidden = active?.status !== 'archived' || !(runs.length || deleted.length);
   renderPlanState();
   if (!run?.plan) return;
   const plan = run.plan;
@@ -549,6 +584,70 @@ function renderPlan() {
   const generation = plan.generation || {};
   $('#generation-footer').textContent = (legalReviewFor(plan) ? '法律适用核对与条文版本随本次方案保存，基于未核实的填报与材料清单；不等于律师审核、事实证明或责任认定。执行补充、材料识别及沟通草稿需人工复核。' : legacyLegalNotice + '。此处保留所选历史版本内容，方案研判、材料识别及沟通草稿需人工复核。') + (generation.provider || generation.model ? ' 生成服务：' + [generation.provider, generation.model].filter(Boolean).join(' / ') + '。' : '') + (generation.reason ? ' 生成说明：' + generation.reason : '');
   selectReportTab(reportTab);
+}
+function renderDeletedRuns(runs) {
+  const details = $('#deleted-runs'); const target = $('#deleted-run-list'); target.replaceChildren();
+  details.hidden = !runs.length;
+  $('#deleted-run-count').textContent = '已删除方案（' + runs.length + '）';
+  const recordId = active?.id;
+  for (const run of runs) {
+    const row = el('div', 'deleted-run-row'); const text = el('div');
+    text.append(el('strong', '', '第 ' + runOrdinal(active, run) + ' 版 · ' + dateTime(run.createdAt)), el('span', '', '删除于 ' + dateTime(run.deletedAt) + ' · 当时资料版本 ' + run.revision));
+    const restore = button('恢复', 'button secondary small restore-run');
+    restore.setAttribute('aria-label', '恢复第 ' + runOrdinal(active, run) + ' 版方案');
+    restore.addEventListener('click', () => changeRunVisibility({ recordId, runId: run.id, stateVersion: run.stateVersion ?? 0 }, true));
+    row.append(text, restore); target.append(row);
+  }
+}
+function closeDeleteRunDialog() {
+  deleteRunTarget = null;
+  if ($('#delete-run-dialog').open) $('#delete-run-dialog').close();
+}
+function openDeleteRunDialog() {
+  const run = currentRun();
+  if (!run || !active || pendingWrites || navigating || runOperationBusy || running.has(active.id) || conflicted) return;
+  if (active.status === 'archived') { toast('恢复案件后操作'); return; }
+  deleteRunTarget = { recordId: active.id, runId: run.id, stateVersion: run.stateVersion ?? 0 };
+  $('#delete-run-case').textContent = active.number + ' · ' + active.title;
+  $('#delete-run-version').textContent = '第 ' + runOrdinal(active, run) + ' 版 · ' + dateTime(run.createdAt) + ' · 资料 v' + run.revision;
+  $('#delete-run-dialog').showModal(); renderControls(); $('#cancel-delete-run').focus();
+}
+async function changeRunVisibility(target, restore = false) {
+  if (!target || active?.id !== target.recordId || navigating || pendingWrites || runOperationBusy || running.has(target.recordId) || conflicted) return;
+  if (active.status === 'archived') { toast('恢复案件后操作'); closeDeleteRunDialog(); return; }
+  const record = cache.get(target.recordId); const run = record?.runs.find((item) => item.id === target.runId);
+  if (!run || Boolean(run.deletedAt) !== restore || Number(run.stateVersion ?? 0) !== Number(target.stateVersion)) {
+    closeDeleteRunDialog(); toast('该方案状态已变更，请核对后重试'); renderPlan(); return;
+  }
+  runOperationBusy = true; runOperationNotices.delete(target.recordId); renderControls();
+  try {
+    await queueWrite(async () => {
+      // Only visibility changes here: unsaved case fields stay in the form.
+      const priorRuns = activeRuns(cache.get(target.recordId));
+      const priorIndex = priorRuns.findIndex((item) => item.id === target.runId);
+      const payload = await api('/api/records/' + encodeURIComponent(target.recordId) + '/runs/' + encodeURIComponent(target.runId) + (restore ? '/restore' : ''), { method: restore ? 'POST' : 'DELETE', body: { stateVersion: target.stateVersion } });
+      const updated = acceptRecord(payload.record);
+      if (restore) selectedRuns.set(target.recordId, target.runId);
+      else if (selectedRuns.get(target.recordId) === target.runId) {
+        const remaining = activeRuns(updated);
+        const nearest = remaining[Math.min(Math.max(priorIndex, 0), remaining.length - 1)];
+        if (nearest) selectedRuns.set(target.recordId, nearest.id); else selectedRuns.delete(target.recordId);
+      }
+      closeDeleteRunDialog();
+      if (active?.id === target.recordId) { renderHeader(); renderPlan(); }
+      toast(restore ? '方案已恢复' : '本版方案已删除，案件资料和附件保留');
+    });
+  } catch (error) {
+    closeDeleteRunDialog();
+    let notice = error.message || '方案操作未完成，请重试。';
+    if (error.status === 409) {
+      notice = '方案状态已变更，请核对后重试。当前填写内容已保留。';
+      try { const payload = await api('/api/records/' + encodeURIComponent(target.recordId)); acceptRecord(payload.record); }
+      catch { notice = '方案状态已变更，刷新方案失败。当前填写内容已保留，请稍后重试。'; }
+    }
+    runOperationNotices.set(target.recordId, notice);
+    if (active?.id === target.recordId) { renderHeader(); renderPlan(); } else toast(notice);
+  } finally { runOperationBusy = false; renderControls(); }
 }
 function sourceLink(source, label) {
   const link = el('a', '', label || source.title); link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = source.title + ' · ' + source.locator; return link;
@@ -685,7 +784,7 @@ async function beginAnalysis() {
 }
 function reportText() {
   const run = currentRun(); if (!run) return '';
-  const plan = run.plan; const ai = aiFor(plan); const review = legalReviewFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
+  const plan = run.plan; const ai = aiFor(plan); const review = legalReviewFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + runOrdinal(active, run) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
   const materials = runMaterials(run);
   lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
   for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
@@ -755,6 +854,11 @@ dropZone.addEventListener('drop', (event) => { if (!pendingWrites && !conflicted
 $('#close-preview').addEventListener('click', () => $('#preview-dialog').close());
 $('#preview-dialog').addEventListener('close', () => $('#preview-content').replaceChildren());
 $('#run-select').addEventListener('change', (event) => { if (active) { selectedRuns.set(active.id, event.target.value); renderPlan(); } });
+$('#delete-run').addEventListener('click', openDeleteRunDialog);
+$('#cancel-delete-run').addEventListener('click', () => { closeDeleteRunDialog(); renderControls(); });
+$('#confirm-delete-run').addEventListener('click', () => changeRunVisibility(deleteRunTarget));
+$('#delete-run-dialog').addEventListener('cancel', (event) => { if (runOperationBusy) event.preventDefault(); });
+$('#delete-run-dialog').addEventListener('close', () => { deleteRunTarget = null; renderControls(); });
 $('#note-body').addEventListener('input', () => noteDrafts.set(active?.id || 'draft', $('#note-body').value));
 $('#note-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const body = $('#note-body').value.trim(); if (!body) { toast('请先填写跟进内容'); return; }

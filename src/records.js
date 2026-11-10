@@ -123,6 +123,7 @@ function run(row, currentRevision = row.revision) {
     inputSnapshot: JSON.parse(row.input_json), attachmentIds: JSON.parse(row.attachment_ids_json),
     plan: withoutStorageKeys(JSON.parse(row.plan_json)), materialSummary: withoutStorageKeys(JSON.parse(row.material_summary_json)),
     snapshotStale: Boolean(row.snapshot_stale) || row.revision < currentRevision, createdAt: row.created_at,
+    deletedAt: row.deleted_at ?? null, stateVersion: row.state_version ?? 0,
   };
 }
 
@@ -156,7 +157,7 @@ export async function listRecords(env, owner, options = {}) {
   // A listing is owner-scoped; every correlated child lookup additionally uses its parent record ID.
   const result = await stmt(db, `SELECT r.*,
     (SELECT count(*) FROM recovery_attachments a WHERE a.owner_id = r.owner_id AND a.record_id = r.id AND a.removed_at IS NULL) AS attachment_count,
-    (SELECT count(*) FROM recovery_runs h WHERE h.owner_id = r.owner_id AND h.record_id = r.id) AS run_count
+    (SELECT count(*) FROM recovery_runs h WHERE h.owner_id = r.owner_id AND h.record_id = r.id AND h.deleted_at IS NULL) AS run_count
     FROM recovery_records r WHERE r.owner_id = ? AND (? = 'all' OR r.status = ?)
     AND (? = '' OR r.title LIKE ? ESCAPE '\\' OR r.number LIKE ? ESCAPE '\\'
       OR json_extract(r.input_json, '$.debtorName') LIKE ? ESCAPE '\\'
@@ -352,6 +353,54 @@ export async function saveRun(env, owner, id, value) {
     parent(db, owner, id),
   ]);
   return run(saved, current.revision);
+}
+
+async function changeRunVisibility(env, owner, id, runId, value, deleted) {
+  const db = database(env, owner);
+  recordId(id);
+  recordId(runId);
+  shape(value, ['stateVersion']);
+  if (!Number.isSafeInteger(value.stateVersion) || value.stateVersion < 0) {
+    throw new RecordError(400, '请提供有效的方案状态版本号。');
+  }
+  const now = new Date().toISOString();
+  const desiredState = deleted ? 1 : 0;
+  // Both writes check the owned, active parent inside the same transaction.
+  // Visibility has its own version; changing it never edits a generation snapshot
+  // or invalidates the input revision used by an in-flight analysis.
+  const result = await db.batch([
+    stmt(db, `UPDATE recovery_records SET updated_at = ?
+      WHERE owner_id = ? AND id = ? AND status = 'active'
+      AND EXISTS (SELECT 1 FROM recovery_runs h WHERE h.owner_id = ? AND h.record_id = ? AND h.id = ?
+        AND h.state_version = ? AND (h.deleted_at IS NOT NULL) != ?)`,
+    now, owner, id, owner, id, runId, value.stateVersion, desiredState),
+    stmt(db, `UPDATE recovery_runs SET deleted_at = ?, state_version = state_version + 1
+      WHERE owner_id = ? AND record_id = ? AND id = ? AND state_version = ?
+      AND (deleted_at IS NOT NULL) != ?
+      AND EXISTS (SELECT 1 FROM recovery_records r WHERE r.owner_id = ? AND r.id = ? AND r.status = 'active')`,
+    deleted ? now : null, owner, id, runId, value.stateVersion, desiredState, owner, id),
+    stmt(db, 'SELECT * FROM recovery_records WHERE owner_id = ? AND id = ?', owner, id),
+    stmt(db, 'SELECT * FROM recovery_runs WHERE owner_id = ? AND record_id = ? AND id = ?', owner, id, runId),
+  ]);
+  const current = rows(result[2])[0];
+  const saved = rows(result[3])[0];
+  if (!current || !saved) throw new RecordError(404, NOT_FOUND);
+  if (current.status !== 'active') throw new RecordError(409, '已归档案件需恢复后才能删除或恢复方案。');
+  // Retrying an already-completed action is harmless, even if its acknowledgement
+  // was lost. A stale request may never reverse a newer visibility decision.
+  if (!changes(result[1]) && Boolean(saved.deleted_at) !== deleted) {
+    throw new RecordError(409, '方案状态已被更新，请重新加载后再操作。');
+  }
+  const record = await getRecord(env, owner, id);
+  return { record, run: record.runs.find((item) => item.id === runId) };
+}
+
+export async function deleteRun(env, owner, id, runId, value) {
+  return changeRunVisibility(env, owner, id, runId, value, true);
+}
+
+export async function restoreRun(env, owner, id, runId, value) {
+  return changeRunVisibility(env, owner, id, runId, value, false);
 }
 
 export async function addNote(env, owner, id, value) {
