@@ -2,14 +2,29 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
+import { handleAPI } from './src/api.js';
 
 const root = path.resolve(fileURLToPath(new URL('./dist/', import.meta.url)));
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 let port = Number(process.env.PORT || 4173);
 const server = http.createServer(async (req, res) => {
-  if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); res.end(); return; }
   try {
     const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    if (pathname.startsWith('/api/')) {
+      const method = req.method || 'GET';
+      const request = new Request('http://' + (req.headers.host || '127.0.0.1') + req.url, {
+        method,
+        headers: req.headers,
+        ...(!['GET', 'HEAD'].includes(method) ? { body: Readable.toWeb(req), duplex: 'half' } : {}),
+      });
+      const response = await handleAPI(request, { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL });
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      res.end(Buffer.from(await response.arrayBuffer()));
+      return;
+    }
+    if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); res.end(); return; }
+    if (!['/', '/index.html', '/styles.css', '/app.js', '/engine.js', '/sources.js', '/favicon.svg'].includes(pathname)) { res.writeHead(404); res.end(); return; }
     const filename = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!filename.startsWith(root + path.sep) && filename !== path.join(root, 'index.html')) { res.writeHead(403); res.end(); return; }
     const data = await readFile(filename);

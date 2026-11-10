@@ -24,11 +24,11 @@
   </aside>
 
   <div class="app-shell">
-    <header class="topbar"><div><span class="breadcrumb">企业回款</span><span class="slash">/</span><strong id="page-title">方案工作台</strong></div><div class="topbar-right"><select class="mobile-nav" id="mobile-nav" aria-label="切换页面"><option value="workspace">方案工作台</option><option value="sources">法律与渠道</option><option value="guide">使用指南</option></select><span class="privacy"><span class="status-dot"></span>输入在当前页面处理</span><span class="demo-tag">演示版 · 规则生成</span></div></header>
+    <header class="topbar"><div><span class="breadcrumb">企业回款</span><span class="slash">/</span><strong id="page-title">方案工作台</strong></div><div class="topbar-right"><select class="mobile-nav" id="mobile-nav" aria-label="切换页面"><option value="workspace">方案工作台</option><option value="sources">法律与渠道</option><option value="guide">使用指南</option></select><span class="privacy"><span class="status-dot"></span>点击生成时发送案情至 DeepSeek</span><span class="demo-tag" id="provider-status" role="status">DeepSeek · 检查配置</span></div></header>
     <main>
       <section id="workspace-view" class="view">
         <div class="page-heading"><div><div class="eyebrow">从一笔应收账款开始</div><h1>让回款，有清晰的下一步。</h1><p>结合项目问题，生成维修、商务、法务与投诉渠道的协同推进建议。</p></div><button class="button secondary small" id="reset-button"><span data-icon="rotate"></span>重新填写</button></div>
-        <div class="scenario-strip"><span class="scenario-label">快速体验</span><button class="scenario active" data-scenario="equipment"><span data-icon="tool"></span>设备销售 / 维保<span class="mini-tag">主要场景</span></button><button class="scenario" data-scenario="general"><span data-icon="briefcase"></span>一般企业货款</button><button class="scenario" data-scenario="construction"><span data-icon="building"></span>工程项目结算</button><span class="sample-label" id="sample-label">当前为虚构示例，可直接修改</span></div>
+        <div class="scenario-strip"><span class="scenario-label">虚构示例 · 本机预览</span><button class="scenario active" data-scenario="equipment"><span data-icon="tool"></span>设备销售 / 维保<span class="mini-tag">主要场景</span></button><button class="scenario" data-scenario="general"><span data-icon="briefcase"></span>一般企业货款</button><button class="scenario" data-scenario="construction"><span data-icon="building"></span>工程项目结算</button><span class="sample-label" id="sample-label">示例预览，点击使用 AI 生成</span></div>
 
         <div class="workspace-grid">
           <section class="panel input-panel" aria-labelledby="input-title">
@@ -50,25 +50,29 @@
                 <fieldset class="field evidence-field"><legend>目前具备的材料</legend><div class="check-options"><label><input type="checkbox" name="evidence" value="contract">合同 / 订单</label><label><input type="checkbox" name="evidence" value="delivery">交付凭证</label><label><input type="checkbox" name="evidence" value="acceptance">验收记录</label><label><input type="checkbox" name="evidence" value="invoice">发票 / 开票记录</label><label><input type="checkbox" name="evidence" value="reconciliation">对账 / 欠款确认</label><label><input type="checkbox" name="evidence" value="collection">催收 / 回复记录</label><label><input type="checkbox" name="evidence" value="repair">故障 / 维修记录</label></div></fieldset>
               </div></details>
               <p id="form-error" class="form-error" role="alert" hidden></p>
-              <button type="submit" class="button primary generate-button"><span data-icon="spark"></span>生成回款方案<span data-icon="arrow"></span></button>
-              <p class="form-footnote"><span data-icon="lock"></span>无需填写真实公司名称 · 本页不会自动提交投诉或发送函件</p>
+              <button type="submit" class="button primary generate-button" id="generate-button"><span data-icon="spark"></span><span id="generate-label">使用 AI 生成</span><span data-icon="arrow"></span></button>
+              <p class="data-notice" id="ai-data-notice">点击生成会将本次案情经服务端发送至 DeepSeek。示例不含真实企业数据；请先去除不必要的敏感信息。本演示不保存历史案例。</p>
+              <p class="provider-note" id="provider-note" role="status">正在检查 AI 服务；示例切换仅在本机生成规则预览。</p>
+              <p class="form-footnote"><span data-icon="lock"></span>无需填写真实公司名称 · 不会自动提交投诉或发送函件</p>
             </form>
           </section>
 
           <section class="result-area" id="result-area" aria-labelledby="result-title" aria-live="polite">
             <div class="result-heading"><div><span class="eyebrow"><span class="status-dot"></span><span id="report-status">示例方案</span></span><h2 id="result-title">回款推进建议</h2></div><div class="result-tools"><button class="icon-button" id="export-button" title="导出文本方案" aria-label="导出文本方案"><span data-icon="download"></span></button><button class="icon-button" id="print-button" title="打印或保存 PDF" aria-label="打印或保存 PDF"><span data-icon="printer"></span></button></div></div>
             <div class="dirty-notice" id="dirty-notice" hidden>输入已修改，请点击“生成回款方案”更新右侧结果。</div>
+            <div class="generation-notice" id="generation-notice" role="status"></div>
             <div id="report-overview"></div>
+            <div id="report-ai"></div>
             <div class="report-tabs" role="tablist" aria-label="方案内容"><button id="tab-actions" class="report-tab active" role="tab" aria-selected="true" aria-controls="report-actions" data-tab="actions">行动方案</button><button id="tab-evidence" class="report-tab" role="tab" aria-selected="false" aria-controls="report-evidence" data-tab="evidence">证据与缺口<span id="gap-count"></span></button><button id="tab-letter" class="report-tab" role="tab" aria-selected="false" aria-controls="report-letter" data-tab="letter">沟通函草稿</button></div>
             <div id="report-actions" class="report-content" role="tabpanel" aria-labelledby="tab-actions"></div>
             <div id="report-evidence" class="report-content" role="tabpanel" aria-labelledby="tab-evidence" hidden></div>
             <div id="report-letter" class="report-content" role="tabpanel" aria-labelledby="tab-letter" hidden></div>
-            <p class="result-footnote">建议以已提供信息为基础。维修责任、付款条件、争议解决约定和法律适用，仍需结合合同及材料核查。</p>
+            <p class="result-footnote">固定规则提供法律条件与官方来源基础；AI 补充建议与草稿需人工复核。维修责任、付款条件与法律适用仍须结合合同及材料核查，生成时不进行实时法律检索。</p>
           </section>
         </div>
       </section>
       <section id="sources-view" class="view" hidden><div class="page-heading"><div><div class="eyebrow">可查证的建议来源</div><h1>法律与官方渠道</h1><p>以下展示适用提示摘要。点击官方链接查看原文与当前办理要求。</p></div></div><div class="source-notice">来源目录经人工核查；本演示不会在每次生成时实时检索法律或验证平台受理条件。历史事件适用版本需另行核查。</div><div class="sources-grid" id="source-catalog"></div></section>
-      <section id="guide-view" class="view" hidden><div class="page-heading"><div><div class="eyebrow">三步形成一份推进方案</div><h1>把欠款问题，拆成可执行的行动。</h1><p>以设备业务为主要场景，同时支持一般货款与工程结算的初步分流。</p></div></div><div class="guide-grid"><article class="panel guide-card"><span class="guide-number">01</span><h2>描述实际情况</h2><p>填写欠款金额、付款到期日及项目问题。对日期或责任尚有争议时，在问题描述中注明，不把推测填写为已确认事实。</p></article><article class="panel guide-card"><span class="guide-number">02</span><h2>补齐关键条件</h2><p>核查验收与维修情况、双方企业类型、证据材料及争议解决条款。投诉是否受理，不能只由欠款金额决定。</p></article><article class="panel guide-card"><span class="guide-number">03</span><h2>按路径分工推进</h2><p>把维修整改、商务对账、法务准备分配给相应人员。根据最新进展重新生成方案，导出后由业务与法务共同核查。</p></article></div><article class="panel guide-detail"><h2>演示范围</h2><p>当前使用固定规则组合建议，未接入大模型、企业合同、附件解析或完整法律检索。演示不会计算回款成功率、认定法律责任或自动发出投诉及函件。</p><p>页面不会保存输入到服务器或浏览器历史案例库；刷新后恢复虚构示例。导出文件仅由你主动下载。</p><h2>投诉与法务的区别</h2><p>行政投诉只能向有职责且符合受理条件的渠道提出。一般企业之间的合同货款争议，应依据合同和事实选择协商、调解、仲裁或诉讼；不能将普通货款问题一律提交消费投诉。</p><button class="button secondary" id="guide-start">开始填写<span data-icon="arrow"></span></button></article></section>
+      <section id="guide-view" class="view" hidden><div class="page-heading"><div><div class="eyebrow">三步形成一份推进方案</div><h1>把欠款问题，拆成可执行的行动。</h1><p>以设备业务为主要场景，同时支持一般货款与工程结算的初步分流。</p></div></div><div class="guide-grid"><article class="panel guide-card"><span class="guide-number">01</span><h2>描述实际情况</h2><p>填写欠款金额、付款到期日及项目问题。对日期或责任尚有争议时，在问题描述中注明，不把推测填写为已确认事实。</p></article><article class="panel guide-card"><span class="guide-number">02</span><h2>补齐关键条件</h2><p>核查验收与维修情况、双方企业类型、证据材料及争议解决条款。投诉是否受理，不能只由欠款金额决定。</p></article><article class="panel guide-card"><span class="guide-number">03</span><h2>按路径分工推进</h2><p>点击“使用 AI 生成”获取案情分析，再把维修整改、商务对账、法务准备分配给相应人员。AI 补充内容及沟通函需由业务与法务共同核查。</p></article></div><article class="panel guide-detail"><h2>生成方式与数据流</h2><p>载入或切换虚构示例只生成本机规则预览，不会调用 DeepSeek。点击“使用 AI 生成”后，本次案情经同源服务发送至 DeepSeek，返回分析、分轨建议和沟通草稿。固定规则中的金额、日期、法律条件与官方链接保持独立；AI 不可替代人工法律判断。</p><p>本演示不保存历史案例，刷新后恢复虚构示例；调用时会将所填案情传给 DeepSeek，请优先使用简称并去除不必要的敏感信息。导出文件仅由你主动下载。浏览器不需要填写或持有服务密钥。</p><p>AI 未配置、超时或调用失败时，页面会明确显示规则回退及原因。法律与官方渠道使用固定来源目录，每次生成不进行实时法律检索，也不解析合同附件。演示不会计算回款成功率、认定法律责任或自动发出投诉及函件。</p><h2>投诉与法务的区别</h2><p>行政投诉只能向有职责且符合受理条件的渠道提出。一般企业之间的合同货款争议，应依据合同和事实选择协商、调解、仲裁或诉讼；不能将普通货款问题一律提交消费投诉。</p><button class="button secondary" id="guide-start">开始填写<span data-icon="arrow"></span></button></article></section>
       <footer class="page-footer"><span>回款策划台 <span class="footer-dot">·</span> 企业回款场景演示</span><span>有条件的建议，有来源的行动。</span></footer>
     </main>
   </div>

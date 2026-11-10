@@ -43,6 +43,61 @@ const tracks = { repair: { label: '维修与履约', icon: 'tool' }, business: {
 let currentPlan;
 let isSample = true;
 let toastTimer;
+let requestVersion = 0;
+let activeRequest;
+let draftMode = 'rules';
+let serviceState = { configured: false, model: '', checked: false };
+
+function setLoading(loading) {
+  document.querySelector('#generate-button').disabled = loading;
+  document.querySelector('#generate-label').textContent = loading ? 'DeepSeek 正在生成…' : '使用 AI 生成';
+  form.setAttribute('aria-busy', String(loading));
+  document.querySelector('#result-area').setAttribute('aria-busy', String(loading));
+}
+function cancelPending() {
+  requestVersion += 1;
+  if (!activeRequest) return;
+  clearTimeout(activeRequest.timer);
+  activeRequest.controller.abort();
+  activeRequest = undefined;
+  setLoading(false);
+  if (currentPlan) renderGenerationNotice(currentPlan);
+}
+function rulesPlan(plan, reason) {
+  return { ...plan, generation: { mode: 'rules', provider: 'DeepSeek', model: serviceState.model, reason } };
+}
+function aiText(value) { return typeof value === 'string' ? value.trim() : ''; }
+function aiStrings(value) { return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : []; }
+function aiFor(plan) { return plan.generation?.mode === 'ai' ? plan.ai : undefined; }
+function normalizeResponse(received, basePlan) {
+  if (!received || !received.generation || !['ai', 'rules'].includes(received.generation.mode)) throw new Error('invalid-response');
+  const generation = { mode: received.generation.mode, provider: 'DeepSeek', model: aiText(received.generation.model), reason: aiText(received.generation.reason) };
+  // Keep every amount, date, action condition and link in the deterministic plan.
+  // Model output is an independent text supplement, never replacement HTML or URLs.
+  if (generation.mode === 'rules') return { ...basePlan, generation: { ...generation, reason: generation.reason || '本次未生成 AI 建议，已使用本机规则结果。' } };
+  if (!received.ai || typeof received.ai !== 'object' || Array.isArray(received.ai)) throw new Error('invalid-response');
+  const allowedSources = new Map(basePlan.actions.map((action) => [action.track, new Set(action.sourceIds)]));
+  const ai = {
+    analysis: aiText(received.ai.analysis),
+    strategy: aiText(received.ai.strategy),
+    recommendations: (Array.isArray(received.ai.recommendations) ? received.ai.recommendations : [])
+      .filter((item) => item && allowedSources.has(item.track))
+      .map((item) => ({ track: item.track, advice: aiText(item.advice), steps: aiStrings(item.steps), sourceIds: aiStrings(item.sourceIds).filter((id) => allowedSources.get(item.track).has(id) && sourceMap.has(id)) }))
+      .filter((item) => item.advice || item.steps.length),
+    followUpQuestions: aiStrings(received.ai.followUpQuestions),
+    communicationDraft: aiText(received.ai.communicationDraft),
+  };
+  if (!ai.analysis && !ai.strategy && !ai.recommendations.length && !ai.communicationDraft) throw new Error('invalid-response');
+  return { ...basePlan, generation, ai };
+}
+function renderGenerationNotice(plan) {
+  const ai = aiFor(plan);
+  const node = document.querySelector('#generation-notice');
+  node.classList.toggle('ai-ready', Boolean(ai));
+  node.textContent = ai
+    ? 'DeepSeek AI 已生成补充分析' + (plan.generation.model ? ' · ' + plan.generation.model : '') + '。固定规则与来源仍为基础，AI 内容和草稿需人工复核；未进行实时法律检索。'
+    : plan.generation.reason;
+}
 
 function chinaToday() {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
@@ -136,8 +191,38 @@ function renderOverview(plan, input) {
   card.append(metrics);
   document.querySelector('#report-overview').replaceChildren(card);
 }
+function renderAI(plan) {
+  const target = document.querySelector('#report-ai');
+  const ai = aiFor(plan);
+  target.replaceChildren();
+  if (!ai) return;
+  const panel = element('article', 'panel ai-analysis');
+  const heading = element('h3'); heading.append(icon('spark'), document.createTextNode('DeepSeek 案情分析'));
+  panel.append(heading, element('p', 'ai-review', 'AI 补充内容 · 以用户描述为基础，需结合材料复核'));
+  if (ai.analysis) panel.append(element('p', 'ai-text', ai.analysis));
+  if (ai.strategy) panel.append(element('h4', '', '建议策略'), element('p', 'ai-text', ai.strategy));
+  if (ai.followUpQuestions.length) {
+    const list = element('ul', 'ai-questions');
+    ai.followUpQuestions.forEach((question) => list.append(element('li', '', question)));
+    panel.append(element('h4', '', '建议进一步确认'), list);
+  }
+  target.append(panel);
+}
+function recommendationBlock(recommendation) {
+  const block = element('div', 'ai-recommendation');
+  block.append(element('h4', '', 'AI 补充建议 · 需复核'));
+  if (recommendation.advice) block.append(element('p', 'ai-text', recommendation.advice));
+  if (recommendation.steps.length) {
+    const list = element('ol'); recommendation.steps.forEach((step) => list.append(element('li', '', step))); block.append(list);
+  }
+  const links = element('div', 'source-links');
+  recommendation.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
+  if (links.childElementCount) block.append(element('p', 'ai-review', '固定目录中的参考来源，适用性需核查'), links);
+  return block;
+}
 function renderActions(plan) {
   const grid = element('div', 'action-grid');
+  const recommendations = aiFor(plan)?.recommendations || [];
   for (const action of plan.actions) {
     const track = tracks[action.track];
     const card = element('article', 'action-card');
@@ -152,6 +237,7 @@ function renderActions(plan) {
     const links = element('div', 'source-links');
     action.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
     card.append(header, element('p', 'action-reason', action.reason), list, meta, details, links);
+    recommendations.filter((item) => item.track === action.track).forEach((item) => card.append(recommendationBlock(item)));
     grid.append(card);
   }
   const timelinePanel = element('article', 'panel timeline-panel');
@@ -185,13 +271,33 @@ function renderEvidence(plan) {
 }
 function renderLetter(plan) {
   const panel = element('article', 'panel letter-panel'); const top = element('div', 'letter-top');
+  const aiDraft = aiFor(plan)?.communicationDraft;
+  draftMode = aiDraft ? 'ai' : 'rules';
+  const draft = element('pre', 'letter-text');
+  const draftLabel = element('p', 'draft-label');
+  const showDraft = () => {
+    draft.textContent = draftMode === 'ai' ? aiDraft : plan.letterDraft;
+    draftLabel.textContent = draftMode === 'ai' ? '正在查看：AI 沟通草稿 · 需逐项核对事实、金额与日期' : '正在查看：固定规则沟通草稿 · 需核查后使用';
+  };
   const button = element('button', 'button secondary small', '复制草稿'); button.type = 'button'; button.prepend(icon('copy'));
   button.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(plan.letterDraft); toast('沟通函草稿已复制，请核查后使用'); }
+    const copyingAI = draftMode === 'ai';
+    try { await navigator.clipboard.writeText(draft.textContent); toast((copyingAI ? 'AI 沟通草稿' : '规则沟通草稿') + '已复制，请核查后使用'); }
     catch { toast('浏览器未允许复制，可选中下方草稿复制'); }
   });
   top.append(element('h3', '', '回款与项目事项沟通函'), button);
-  panel.append(top, element('p', 'letter-help', '这是业务沟通草稿。请补齐双方名称、联系人及回复日期，核对事实后使用；系统不会自动发送。'), element('pre', 'letter-text', plan.letterDraft));
+  panel.append(top, element('p', 'letter-help', '这是业务沟通草稿。请补齐双方名称、联系人及回复日期，核对事实、金额、日期与法律表述后使用；系统不会自动发送。'));
+  if (aiDraft) {
+    const choice = element('div', 'draft-choice');
+    const label = element('label', '', '选择草稿'); label.htmlFor = 'draft-choice';
+    const select = element('select'); select.id = 'draft-choice';
+    const aiOption = element('option', '', 'AI 草稿 · 需复核'); aiOption.value = 'ai';
+    const rulesOption = element('option', '', '固定规则草稿'); rulesOption.value = 'rules';
+    select.append(aiOption, rulesOption);
+    select.addEventListener('change', () => { draftMode = select.value; showDraft(); });
+    choice.append(label, select); panel.append(choice);
+  }
+  showDraft(); panel.append(draftLabel, draft);
   document.querySelector('#report-letter').replaceChildren(panel);
 }
 function renderSources() {
@@ -207,13 +313,16 @@ function renderSources() {
     catalog.append(card);
   }
 }
-function renderPlan(input) {
-  const plan = generatePlan(input, chinaToday());
+function renderPlan(plan, input, samplePreview = false) {
   currentPlan = plan;
-  renderOverview(plan, input); renderActions(plan); renderEvidence(plan); renderLetter(plan);
-  document.querySelector('#report-status').textContent = (isSample ? '虚构示例方案' : '方案已更新') + ' · ' + plan.generatedAt;
+  renderOverview(plan, input); renderAI(plan); renderActions(plan); renderEvidence(plan); renderLetter(plan);
+  renderGenerationNotice(plan);
+  document.querySelector('#report-status').textContent = (samplePreview ? '虚构示例 · 本机规则预览' : aiFor(plan) ? 'DeepSeek AI + 固定规则' : '仅规则结果 · 未生成 AI') + ' · ' + plan.generatedAt;
+  if (!samplePreview) document.querySelector('#sample-label').textContent = (isSample ? '虚构示例' : '当前输入') + (aiFor(plan) ? ' · AI 分析已生成' : ' · 本次仅规则结果');
   document.querySelector('#dirty-notice').hidden = true;
   document.querySelector('#form-error').hidden = true;
+  document.querySelector('#export-button').disabled = false;
+  document.querySelector('#print-button').disabled = false;
   selectTab('actions');
 }
 const samples = {
@@ -222,6 +331,7 @@ const samples = {
   construction: { amount: 760000, dueDate: () => shiftedDate(-180), issueText: '项目已交付使用，但结算审核尚未完成，双方对部分工程量存在争议。客户以结算未完成为由暂缓付款，需要先核查合同付款节点、项目记录和无争议金额。以上均为虚构示例。', issueTypes: ['acceptance', 'dispute'], evidence: ['contract', 'delivery', 'collection'], acceptanceStatus: 'pending' },
 };
 function loadSample(kind) {
+  cancelPending();
   form.reset();
   const sample = samples[kind];
   form.elements.projectType.value = kind;
@@ -230,29 +340,88 @@ function loadSample(kind) {
     else form.elements[key].value = typeof value === 'function' ? value() : value;
   }
   document.querySelectorAll('[data-scenario]').forEach((button) => button.classList.toggle('active', button.dataset.scenario === kind));
-  document.querySelector('#sample-label').textContent = '当前为虚构示例，可直接修改'; isSample = true;
-  renderPlan(getInput());
+  document.querySelector('#sample-label').textContent = '示例预览，点击使用 AI 生成'; isSample = true;
+  const input = getInput();
+  renderPlan(rulesPlan(generatePlan(input, chinaToday()), '示例预览，点击“使用 AI 生成”获取 DeepSeek 分析。当前仅为本机规则结果，未调用 AI；示例不含真实企业数据。'), input, true);
 }
-document.querySelectorAll('[data-scenario]').forEach((button) => button.addEventListener('click', () => { loadSample(button.dataset.scenario); toast('已载入虚构示例'); }));
-form.addEventListener('input', () => {
+document.querySelectorAll('[data-scenario]').forEach((button) => button.addEventListener('click', () => { loadSample(button.dataset.scenario); toast('已载入虚构示例，本机预览未调用 AI'); }));
+function markEdited() {
+  const wasGenerating = Boolean(activeRequest);
+  cancelPending();
   isSample = false; document.querySelector('#sample-label').textContent = '正在编辑输入';
-  document.querySelector('#dirty-notice').textContent = '输入已修改，请点击“生成回款方案”更新右侧结果。';
+  document.querySelector('#dirty-notice').textContent = (wasGenerating ? '输入已修改，已取消本次等待；已发出的请求可能仍在服务端处理。' : '输入已修改，当前结果对应修改前的输入。') + '请点击“使用 AI 生成”更新结果。';
   document.querySelector('#dirty-notice').hidden = false;
-});
-form.addEventListener('change', () => { isSample = false; document.querySelector('#dirty-notice').textContent = '输入已修改，请点击“生成回款方案”更新右侧结果。'; document.querySelector('#dirty-notice').hidden = false; });
-form.addEventListener('submit', (event) => {
+  document.querySelector('#form-error').hidden = true;
+}
+form.addEventListener('input', markEdited);
+form.addEventListener('change', markEdited);
+form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (activeRequest) return;
+  let input;
+  let basePlan;
   try {
-    renderPlan(getInput()); toast('回款方案已更新');
-    if (window.innerWidth <= 720) document.querySelector('#result-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    input = getInput();
+    basePlan = generatePlan(input, chinaToday());
   } catch (error) {
     const node = document.querySelector('#form-error'); node.textContent = error.message; node.hidden = false;
+    return;
+  }
+  document.querySelector('#form-error').hidden = true;
+  const controller = new AbortController();
+  const version = ++requestVersion;
+  const pending = { controller, timer: undefined, timedOut: false };
+  pending.timer = setTimeout(() => { pending.timedOut = true; controller.abort(); }, 65000);
+  activeRequest = pending;
+  setLoading(true);
+  const notice = document.querySelector('#generation-notice'); notice.classList.remove('ai-ready');
+  notice.textContent = 'DeepSeek 正在分析本次案情，可能需要约一分钟。下方仍为上次结果；修改输入或切换示例会取消本次等待。';
+  let failureMessage;
+  try {
+    const response = await fetch('/api/plan', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: controller.signal });
+    let payload;
+    try { payload = await response.json(); } catch { throw new Error('invalid-response'); }
+    if (!response.ok) {
+      // The same-origin endpoint returns safe, user-facing messages only.
+      failureMessage = aiText(payload?.error) || (response.status === 429 ? '请求较多，请稍后再试。' : 'AI 服务暂时不可用，请稍后重试。');
+      throw new Error('service-error');
+    }
+    const plan = normalizeResponse(payload?.plan, basePlan);
+    if (version !== requestVersion || activeRequest !== pending) return;
+    renderPlan(plan, input);
+    toast(aiFor(plan) ? 'DeepSeek 补充分析已生成，请复核后使用' : '本次未生成 AI，已展示规则结果');
+  } catch (error) {
+    if (version !== requestVersion || activeRequest !== pending) return;
+    const reason = pending.timedOut
+      ? 'AI 请求等待超过 65 秒，本次未获得 AI 结果。已使用本机规则结果，可稍后重试。'
+      : failureMessage ? failureMessage + ' 本次未生成 AI，已使用本机规则结果。'
+        : error.message === 'invalid-response' ? 'AI 服务返回的内容无法使用，本次未生成 AI，已使用本机规则结果。'
+          : '无法连接 AI 服务，本次未生成 AI，已使用本机规则结果。请检查网络连接或稍后重试。';
+    renderPlan(rulesPlan(basePlan, reason), input);
+    toast('AI 未生成，已回退为本机规则结果');
+  } finally {
+    clearTimeout(pending.timer);
+    if (version === requestVersion && activeRequest === pending) {
+      activeRequest = undefined;
+      setLoading(false);
+      if (window.innerWidth <= 720) document.querySelector('#result-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   }
 });
 document.querySelector('#reset-button').addEventListener('click', () => {
+  cancelPending();
   form.reset(); form.elements.amount.value = ''; form.elements.dueDate.value = ''; form.elements.issueText.value = ''; isSample = false;
+  currentPlan = undefined;
+  ['#report-overview', '#report-ai', '#report-actions', '#report-evidence', '#report-letter'].forEach((selector) => document.querySelector(selector).replaceChildren());
+  document.querySelector('#print-report').textContent = '';
+  document.querySelector('#gap-count').textContent = '';
+  document.querySelector('#report-status').textContent = '等待填写';
+  document.querySelector('#generation-notice').textContent = '填写案情后点击“使用 AI 生成”。提交会将本次案情经服务端发送至 DeepSeek。';
+  document.querySelector('#generation-notice').classList.remove('ai-ready');
+  document.querySelector('#export-button').disabled = true;
+  document.querySelector('#print-button').disabled = true;
   document.querySelector('#sample-label').textContent = '请填写新的案件信息';
-  document.querySelector('#dirty-notice').textContent = '表单已清空。右侧暂时保留上次方案，请填写后重新生成。';
+  document.querySelector('#dirty-notice').textContent = '表单与结果已清空，请填写后重新生成。';
   document.querySelector('#dirty-notice').hidden = false;
   document.querySelector('#form-error').hidden = true;
   document.querySelectorAll('[data-scenario]').forEach((button) => button.classList.remove('active'));
@@ -260,20 +429,54 @@ document.querySelector('#reset-button').addEventListener('click', () => {
 });
 function reportText() {
   const p = currentPlan;
-  const lines = ['企业回款推进方案（演示草稿）', '分析日期：' + p.generatedAt, '', '【输入与判断】', ...p.facts.map((fact) => fact.label + '：' + fact.value), '', '【整体建议】', p.summary, p.strategy, '内部推进优先级：' + p.priority.label, p.priority.reason];
+  if (!p) return '';
+  const ai = aiFor(p);
+  const lines = ['企业回款推进方案（需人工复核）', '分析日期：' + p.generatedAt, '生成方式：' + (ai ? 'DeepSeek AI 补充分析 + 固定规则基础' : '仅固定规则，未生成 AI'), '服务提供方：DeepSeek' + (p.generation.model ? ' · 模型：' + p.generation.model : '')];
+  if (p.generation.reason) lines.push('生成说明：' + p.generation.reason);
+  lines.push('', '【输入与固定规则判断】', ...p.facts.map((fact) => fact.label + '：' + fact.value), '', '【整体建议 · 固定规则】', p.summary, p.strategy, '内部推进优先级：' + p.priority.label, p.priority.reason);
+  if (ai) {
+    lines.push('', '【DeepSeek AI 案情分析 · 需复核】', ai.analysis, 'AI 建议策略：' + ai.strategy);
+    for (const item of ai.recommendations) {
+      lines.push('', '【AI 补充 · ' + tracks[item.track].label + '】', item.advice, ...item.steps.map((step, index) => (index + 1) + '. ' + step));
+      item.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) lines.push('固定目录参考来源（适用性需核查）：' + source.title, source.url); });
+    }
+    if (ai.followUpQuestions.length) lines.push('', '【AI 建议进一步确认】', ...ai.followUpQuestions.map((item) => '- ' + item));
+  }
   for (const action of p.actions) {
-    lines.push('', '【' + tracks[action.track].label + '】' + action.title, '负责人：' + action.owner, '安排：' + action.timing, '原因：' + action.reason, ...action.steps.map((step, index) => (index + 1) + '. ' + step), '条件：' + action.condition, '材料：' + action.materials.join('、'));
+    lines.push('', '【固定规则 · ' + tracks[action.track].label + '】' + action.title, '负责人：' + action.owner, '安排：' + action.timing, '原因：' + action.reason, ...action.steps.map((step, index) => (index + 1) + '. ' + step), '条件：' + action.condition, '材料：' + action.materials.join('、'));
     action.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) lines.push('官方依据 / 渠道：' + source.title + '\n' + source.url + '\n定位：' + (source.articles.join('、') || source.locator) + '\n资料核查日期：' + source.verifiedAt); });
   }
-  lines.push('', '【建议推进顺序】', ...p.timeline.flatMap((stage) => [stage.phase + ' ' + stage.title, ...stage.items.map((item) => '- ' + item)]), '', '【待补充与确认】', ...p.missingInfo.map((item) => '- ' + item), '', '【材料清单】', ...p.evidenceChecklist.map((item) => (item.present ? '[用户称已持有] ' : '[待准备] ') + item.label + '：' + item.reason), '', '【沟通函草稿】', p.letterDraft, '', '【核查提醒】', ...p.caution.map((item) => '- ' + item), '', '当前为规则演示，未接入大模型、企业合同或实时法律检索。');
+  lines.push('', '【建议推进顺序】', ...p.timeline.flatMap((stage) => [stage.phase + ' ' + stage.title, ...stage.items.map((item) => '- ' + item)]), '', '【待补充与确认】', ...p.missingInfo.map((item) => '- ' + item), '', '【材料清单】', ...p.evidenceChecklist.map((item) => (item.present ? '[用户称已持有] ' : '[待准备] ') + item.label + '：' + item.reason), '', '当前查看的草稿：' + (draftMode === 'ai' && ai?.communicationDraft ? 'AI 草稿' : '固定规则草稿'), '', '【固定规则沟通函草稿 · 需复核】', p.letterDraft);
+  if (ai?.communicationDraft) lines.push('', '【AI 沟通函草稿 · 需复核事实、金额、日期与法律表述】', ai.communicationDraft);
+  lines.push('', '【核查提醒】', ...p.caution.map((item) => '- ' + item), '', '固定规则与官方来源提供法律条件基础；AI 内容仅作补充，均需人工复核。生成时未进行实时法律检索，未解析合同附件。点击 AI 生成会将本次案情经服务端发送至 DeepSeek，本演示不保存历史案例。');
   return lines.join('\n');
 }
 document.querySelector('#export-button').addEventListener('click', () => {
+  if (!currentPlan) return;
   const blob = new Blob(['\uFEFF' + reportText()], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = element('a');
   a.href = url; a.download = '回款推进方案-' + currentPlan.generatedAt + '.txt'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('已导出当前生成的文本方案');
 });
-document.querySelector('#print-button').addEventListener('click', () => { document.querySelector('#print-report').textContent = reportText(); window.print(); });
+document.querySelector('#print-button').addEventListener('click', () => { if (!currentPlan) return; document.querySelector('#print-report').textContent = reportText(); window.print(); });
 window.addEventListener('beforeprint', () => { if (currentPlan) document.querySelector('#print-report').textContent = reportText(); });
+async function checkService() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch('/api/health', { credentials: 'same-origin', signal: controller.signal });
+    if (!response.ok) throw new Error('health-unavailable');
+    const payload = await response.json();
+    serviceState = { configured: payload.configured === true, model: aiText(payload.model), checked: true };
+    document.querySelector('#provider-status').textContent = serviceState.configured ? 'DeepSeek · 已配置' : 'DeepSeek · 未配置';
+    document.querySelector('#provider-note').textContent = serviceState.configured
+      ? 'DeepSeek 已配置' + (serviceState.model ? ' · ' + serviceState.model : '') + '。点击生成才调用 AI，示例切换不调用。'
+      : '服务端尚未配置 DeepSeek。仍可点击生成并获得规则方案；页面不需要填写密钥。';
+  } catch {
+    serviceState = { configured: false, model: '', checked: true };
+    document.querySelector('#provider-status').textContent = 'DeepSeek · 服务未连接';
+    document.querySelector('#provider-note').textContent = '暂时无法检查 AI 服务。可尝试生成；调用失败会明确回退为本机规则结果。';
+  } finally { clearTimeout(timer); }
+}
 renderSources();
 loadSample('equipment');
 selectTab('actions');
+checkService();
