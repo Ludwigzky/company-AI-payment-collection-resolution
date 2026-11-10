@@ -4,7 +4,6 @@ import { SOURCES } from './sources.js';
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const form = $('#case-form');
-const sourceMap = new Map(SOURCES.map((source) => [source.id, source]));
 const trackNames = { repair: '维修与履约', business: '商务与财务', legal: '法务与争议解决', complaint: '投诉与主管渠道' };
 const cache = new Map();
 const selections = new Map();
@@ -373,6 +372,131 @@ function currentRun() {
   return active.runs.find((run) => run.id === selectedRuns.get(active.id)) || active.runs[0];
 }
 function aiFor(plan) { return plan?.generation?.mode === 'ai' ? plan.ai : null; }
+const legalStatusNames = { conditional: '条件性建议', insufficient: '信息不足', not_applicable: '本案暂不适用' };
+const legacyLegalNotice = '本版本未保存逐条法律核验，请重新生成';
+function legalReviewFor(plan) {
+  const review = plan?.legalReview;
+  return review && typeof review === 'object' && !Array.isArray(review) ? review : null;
+}
+function legalFindingsFor(plan, action) { return (legalReviewFor(plan)?.findings || []).filter((finding) => finding.actionId === action.id); }
+function legalRecommendationFindings(review, recommendation) {
+  const basis = recommendation.basisIds || recommendation.groundingIds || []; const ids = Array.isArray(basis) ? [...new Set(basis)] : [];
+  const findings = (review?.findings || []).filter((finding) => ids.includes(finding.id) && finding.track === recommendation.track && finding.status !== 'not_applicable');
+  return ids.length && findings.length === ids.length ? findings : [];
+}
+function legalReviewTasks(findings) { return [...new Set(findings.flatMap((finding) => finding.missingEvidence || []))]; }
+function legalStatusName(finding) { return finding.statusLabel || legalStatusNames[finding.status] || '待核实'; }
+function legalStatusTag(finding) { return el('span', 'legal-status ' + (Object.hasOwn(legalStatusNames, finding.status) ? finding.status : ''), legalStatusName(finding)); }
+function adviceKind(action, review) { return ['repair', 'business'].includes(action.track) || (review?.businessActionIds || []).includes(action.id) ? '业务建议' : '法律建议'; }
+function factText(value) {
+  if (value === undefined || value === null || value === '') return '未填报';
+  if (Array.isArray(value)) return value.length ? value.map(factText).join('、') : '未填报';
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+function factOrigin(fact) { return fact.source === 'material_inventory' ? '附件清单 · 未核实；不证明材料内容与真实性' : '用户填报 · 未核实'; }
+function factValueText(fact) {
+  const choices = {
+    projectType: { equipment: '设备销售 / 安装维保', general: '一般企业应收账款', construction: '工程项目结算' },
+    debtorType: { enterprise: '一般企业 / 规模待核实', large: '大型企业', government: '机关', institution: '事业单位' },
+    creditorSize: { unknown: '尚未确认', sme: '中小企业', large: '大型企业' },
+    acceptanceStatus: { unknown: '尚未确认', passed: '填报已验收，待核验', pending: '尚待验收 / 结算', disputed: '存在验收 / 结算异议' },
+    disputeClause: { unknown: '尚未确认', court: '法院诉讼约定，待核验', arbitration: '仲裁约定，待核验' },
+    disputeAccepted: { unknown: '尚未确认', no: '填报尚未受理或处理', yes: '填报已有受理或处理' },
+    issueTypes: { repair: '设备维修', acceptance: '验收未完成', invoice: '开票 / 对账', cashflow: '资金紧张', dispute: '金额 / 质量争议', unresponsive: '失联 / 拒绝沟通' },
+  };
+  const labels = choices[fact.field];
+  if (labels) return Array.isArray(fact.value) ? fact.value.map((value) => labels[value] || value).join('、') || '未填报' : labels[fact.value] || factText(fact.value);
+  if (fact.source === 'material_inventory' && fact.value && typeof fact.value === 'object') return factText(fact.value.name) + '；' + factText(fact.value.method) + '；仅为本次材料清单';
+  return factText(fact.value);
+}
+function reviewDateLabel(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : dateTime(value); }
+function corpusVerificationDates(review) { return [...new Set((review.findings || []).flatMap((finding) => (finding.citations || []).map((citation) => citation.verifiedAt)).filter(Boolean))].join('、'); }
+function legalFindingTarget(id) { return 'legal-finding-' + encodeURIComponent(String(id)); }
+function openLegalFinding(id) {
+  selectReportTab('legal');
+  const target = id ? document.getElementById(legalFindingTarget(id)) : $('#report-legal');
+  if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+}
+function legalDetailButton(finding, label = '查看法律依据') {
+  const node = button(label, 'text-button legal-detail-link'); node.addEventListener('click', () => openLegalFinding(finding?.id)); return node;
+}
+function officialClauseLink(citation) {
+  try {
+    const url = new URL(citation.officialUrl);
+    if (url.protocol !== 'https:' || url.username || url.password || !(url.hostname === 'gov.cn' || url.hostname.endsWith('.gov.cn'))) return null;
+    const link = el('a', '', '查看官方全文'); link.href = citation.officialUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; return link;
+  } catch { return null; }
+}
+function legalMetadata(entries, className = 'legal-metadata') {
+  const metadata = el('dl', className);
+  for (const [label, value] of entries) { const row = el('div'); row.append(el('dt', '', label), el('dd', '', factText(value))); metadata.append(row); }
+  return metadata;
+}
+function citationEntries(citation) {
+  const statuses = { current: '现行版本，具体时间适用另核', repealed: '已失效版本', superseded: '已被替代的版本' };
+  const temporalStatuses = { verification_required: '版本信息待核验', not_yet_effective_at_review: '核对日尚未施行', outside_version_at_review: '核对日不在该版本效力期间', provisional_current_procedure: '当前程序规则线索，实际启动日期待核', historical_scope_unconfirmed: '历史事实的时间适用尚未确认', reported_dates_within_version: '填报日期在所载版本期间，仍待核验', historical_version_required: '需补检历史版本及衔接规则', reported_date_invalid: '填报日期无效', reported_date_in_future: '填报日期尚未发生' };
+  return [['条文编号', citation.id], ['法律编号', citation.lawId], ['版本', [citation.versionLabel, citation.versionId].filter(Boolean).join(' · ')], ['公布日期', citation.promulgatedAt], ['施行日期', citation.effectiveFrom], ['失效日期', citation.effectiveTo || '未记载'], ['条文状态', statuses[citation.status] || citation.status], ['时点适用', [temporalStatuses[citation.temporalStatus] || citation.temporalStatus, citation.temporalNote].filter(Boolean).join(' · ')], ['发布机关', citation.issuer], ['原文定位', citation.locator], ['来源类型', citation.sourceKind === 'official-fulltext' ? '官方全文' : citation.sourceKind], ['资料核查日期', citation.verifiedAt]];
+}
+function renderLegalSummary(plan) {
+  const review = legalReviewFor(plan); const panel = el('article', 'panel legal-summary'); const copy = el('div');
+  copy.append(el('h3', '', '法律适用核对'));
+  if (!review) copy.append(el('p', '', legacyLegalNotice));
+  else {
+    const findings = review.findings || []; const parts = Object.entries(legalStatusNames).map(([status, label]) => [label, findings.filter((finding) => finding.status === status).length]).filter(([, count]) => count);
+    copy.append(el('p', '', parts.length ? parts.map(([label, count]) => label + ' ' + count + ' 项').join(' · ') : '本版本尚无适用核对项'));
+    const dates = corpusVerificationDates(review);
+    copy.append(el('small', '', '已核验法条库 · 按案件检索；' + (dates ? '法条核验日期 ' + dates + '；' : '') + '非实时全库查询。填报事实未核实。'));
+  }
+  panel.append(copy, legalDetailButton(null, review ? '查看核对与条文' : '查看版本说明')); $('#report-legal-summary').replaceChildren(panel);
+}
+function renderClause(citation) {
+  const details = el('details', 'legal-clause'); const summary = el('summary');
+  summary.append(el('strong', '', (citation.lawTitle || '法律条文') + ' ' + (citation.article || '')), el('span', '', '展开条文全文与版本信息')); details.append(summary);
+  details.append(el('p', 'clause-text', citation.text || '本版本未保存条文全文。'), legalMetadata(citationEntries(citation), 'legal-metadata clause-metadata'));
+  const source = el('div', 'clause-source'); const link = officialClauseLink(citation);
+  if (link) source.append(link); else source.append(el('span', '', '本版本未提供可跳转的官方全文地址'));
+  if (citation.officialUrl) source.append(el('span', 'official-url', citation.officialUrl));
+  details.append(source); return details;
+}
+function renderLegal(plan) {
+  const target = $('#report-legal'); target.replaceChildren(); const review = legalReviewFor(plan);
+  if (!review) { const panel = el('article', 'panel legal-panel'); panel.append(el('h3', '', '历史版本说明'), el('p', '', legacyLegalNotice), el('p', 'legal-muted', '当前展示所选版本原有内容；重新生成后将另存一个包含逐条法律核对的新版本。')); target.append(panel); return; }
+  const overview = el('article', 'panel legal-panel'); overview.append(el('h3', '', '法律适用核对'), el('p', 'legal-scope-label', '已核验法条库 · 按案件检索 · 非实时全库查询'), el('p', '', review.coverageNote || '根据所选版本的填报信息与附件清单进行法律适用条件核对。'), legalMetadata([['适用地区', review.jurisdiction], ['核对日期', reviewDateLabel(review.reviewedAt)], ['法条核验日期', corpusVerificationDates(review) || '见条文记录'], ['条文库版本', review.corpusVersion], ['核对格式版本', review.schemaVersion]]), el('p', 'legal-muted', '以下核对随本次方案保存。用户填报及附件清单均未核实；附件存在、文字提取或图片识别不代表事实已获证明。条文核对不等于律师审核或责任认定。'));
+  if (review.limitations?.length) { overview.append(el('h4', '', '核对范围与限制'), list(review.limitations)); }
+  target.append(overview);
+  const facts = el('article', 'panel legal-panel'); facts.append(el('h3', '', '核对所用事实 · 均未核实')); const wrap = el('div', 'table-wrap'); const table = el('table', 'legal-facts-table'); const head = el('thead'); const heading = el('tr');
+  ['事实编号', '填报项与当时值', '来源及核实状态'].forEach((label) => heading.append(el('th', '', label))); head.append(heading); table.append(head); const body = el('tbody');
+  for (const fact of review.facts || []) { const row = el('tr'); const value = el('td'); value.append(el('strong', '', fact.label), el('p', '', factValueText(fact))); row.append(el('td', 'fact-id', fact.id), value, el('td', '', factOrigin(fact))); body.append(row); }
+  table.append(body); wrap.append(table); facts.append(wrap); target.append(facts);
+  const factMap = new Map((review.facts || []).map((fact) => [fact.id, fact]));
+  for (const finding of review.findings || []) {
+    const card = el('article', 'panel legal-panel legal-finding'); card.id = legalFindingTarget(finding.id); const header = el('div', 'legal-finding-heading'); const title = el('div'); title.append(el('div', 'action-kicker', [finding.id, trackNames[finding.track] || finding.track].filter(Boolean).join(' · ')), el('h3', '', finding.title)); header.append(title, legalStatusTag(finding)); card.append(header, el('p', 'legal-advice', finding.advice));
+    card.append(el('h4', '', '为什么关联本案'), el('p', '', factText(finding.whyApplicable)));
+    if (finding.factIds?.length) { card.append(el('h4', '', '关联填报事实')); const items = finding.factIds.map((id) => { const fact = factMap.get(id); return fact ? id + ' · ' + fact.label + '：' + factValueText(fact) + '（' + factOrigin(fact) + '）' : id + ' · 本版本未保存对应事实'; }); card.append(list(items)); }
+    for (const [label, items] of [['仍需满足的条件', finding.conditions], ['待补充或核实的证据', finding.missingEvidence], ['适用提醒', finding.cautions]]) if (items?.length) card.append(el('h4', '', label), list(items));
+    card.append(el('h4', '', '关联条文 · 本版本原文'));
+    if (finding.citations?.length) finding.citations.forEach((citation) => card.append(renderClause(citation))); else card.append(el('p', 'legal-muted', '本核对项未保存关联条文，不据此确认具体法律权利。'));
+    target.append(card);
+  }
+  const retrieval = el('details', 'panel legal-panel retrieval-panel'); retrieval.append(el('summary', '', '检索问题与命中记录'), el('p', 'legal-muted', '检索方式：' + factText(review.retrieval?.description || review.retrieval?.method)));
+  for (const query of review.retrieval?.queries || []) { const row = el('div', 'retrieval-row'); row.append(el('strong', '', (query.id ? query.id + ' · ' : '') + query.question), el('p', '', '命中条文：' + (query.clauseIds?.join('、') || '无'))); retrieval.append(row); }
+  retrieval.append(el('p', 'legal-muted', '本次命中条文编号：' + (review.retrieval?.retrievedClauseIds?.join('、') || '无'))); target.append(retrieval);
+}
+function legalTraceText(plan) {
+  const review = legalReviewFor(plan); if (!review) return ['【法律适用核对】', legacyLegalNotice];
+  const lines = ['【法律适用核对 · 本版本保存的核对依据】', '已核验法条库 · 按案件检索 · 非实时全库查询', '适用地区：' + factText(review.jurisdiction), '核对日期：' + reviewDateLabel(review.reviewedAt), '法条核验日期：' + (corpusVerificationDates(review) || '见条文记录'), '条文库版本：' + factText(review.corpusVersion), '核对格式版本：' + factText(review.schemaVersion), '核对范围：' + factText(review.coverageNote), '用户填报与附件清单均未核实；条文核对不等于事实证明或责任认定。', ...(review.limitations || []).map((item) => '范围限制：' + item), '', '【法律核对所用事实】'];
+  for (const fact of review.facts || []) lines.push(fact.id + ' · ' + fact.label + '：' + factText(fact.value), '对应字段：' + (fact.field || '材料清单'), '来源与状态：' + factOrigin(fact));
+  const factMap = new Map((review.facts || []).map((fact) => [fact.id, fact]));
+  for (const finding of review.findings || []) {
+    lines.push('', '【核对项 ' + finding.id + '】' + finding.title, '关联动作：' + finding.actionId + ' · ' + (trackNames[finding.track] || finding.track), '适用状态：' + legalStatusName(finding), '核对建议：' + factText(finding.advice), '为什么关联本案：' + factText(finding.whyApplicable));
+    for (const id of finding.factIds || []) { const fact = factMap.get(id); lines.push('关联事实：' + id + (fact ? ' · ' + fact.label + '：' + factText(fact.value) + '（' + factOrigin(fact) + '）' : ' · 本版本未保存对应事实')); }
+    for (const [label, items] of [['仍需满足的条件', finding.conditions], ['待补充或核实的证据', finding.missingEvidence], ['适用提醒', finding.cautions]]) for (const item of items || []) lines.push(label + '：' + item);
+    for (const citation of finding.citations || []) { lines.push('', '关联条文：' + citation.lawTitle + ' ' + citation.article, '条文全文：', citation.text || '本版本未保存条文全文。', ...citationEntries(citation).map(([label, value]) => label + '：' + factText(value)), '官方全文：' + factText(citation.officialUrl), '关联主题：' + (citation.topics?.join('、') || '未记载')); }
+  }
+  lines.push('', '【检索问题与命中记录】', '检索方式：' + factText(review.retrieval?.method));
+  for (const query of review.retrieval?.queries || []) lines.push((query.id ? query.id + ' · ' : '') + query.question, '命中条文：' + (query.clauseIds?.join('、') || '无'));
+  lines.push('本次命中条文编号：' + (review.retrieval?.retrievedClauseIds?.join('、') || '无')); return lines;
+}
 function runMaterials(run) {
   const rows = Array.isArray(run.plan?.materialSummary) ? run.plan.materialSummary : Array.isArray(run.materialSummary) ? run.materialSummary : [];
   const included = new Set(run.attachmentIds || []);
@@ -418,15 +542,10 @@ function renderPlan() {
   renderPlanState();
   if (!run?.plan) return;
   const plan = run.plan;
-  renderOverview(plan, run); renderRunMaterials(run); renderAnalysis(plan); renderActions(plan); renderEvidence(plan); renderLetter(plan); renderSnapshot(plan, run);
+  renderOverview(plan, run); renderRunMaterials(run); renderLegalSummary(plan); renderAnalysis(plan); renderActions(plan); renderLegal(plan); renderEvidence(plan); renderLetter(plan); renderSnapshot(plan, run);
   const generation = plan.generation || {};
-  $('#generation-footer').textContent = '金额、日期、适用条件及官方来源由固定规则形成。方案研判、材料识别及沟通草稿需人工复核；未进行实时法律检索。' + (generation.provider || generation.model ? ' 生成服务：' + [generation.provider, generation.model].filter(Boolean).join(' / ') + '。' : '') + (generation.reason ? ' 生成说明：' + generation.reason : '');
+  $('#generation-footer').textContent = (legalReviewFor(plan) ? '法律适用核对与条文版本随本次方案保存，基于未核实的填报与材料清单；不等于律师审核、事实证明或责任认定。执行补充、材料识别及沟通草稿需人工复核。' : legacyLegalNotice + '。此处保留所选历史版本内容，方案研判、材料识别及沟通草稿需人工复核。') + (generation.provider || generation.model ? ' 生成服务：' + [generation.provider, generation.model].filter(Boolean).join(' / ') + '。' : '') + (generation.reason ? ' 生成说明：' + generation.reason : '');
   selectReportTab(reportTab);
-}
-function sourceLinks(ids = []) {
-  const links = el('div', 'source-links');
-  ids.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
-  return links;
 }
 function sourceLink(source, label) {
   const link = el('a', '', label || source.title); link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = source.title + ' · ' + source.locator; return link;
@@ -443,7 +562,7 @@ function renderOverview(plan, run) {
 }
 function renderRunMaterials(run) {
   const materials = runMaterials(run); const target = $('#run-materials'); target.replaceChildren();
-  $('#run-material-count').textContent = (run.attachmentIds || []).length + ' 个 · 当时选中';
+  $('#run-material-count').textContent = (run.attachmentIds || []).length + ' 个 · 当时选中 · 清单及内容均待核实';
   if (!materials.length) target.append(el('div', 'material-run-row', '本版本未使用附件，仅依据当时填报的案情。'));
   for (const item of materials) {
     const row = el('div', 'material-run-row');
@@ -459,22 +578,44 @@ function renderRunMaterials(run) {
 }
 function renderAnalysis(plan) {
   const ai = aiFor(plan); const target = $('#report-analysis'); target.replaceChildren(); if (!ai) return;
-  const panel = el('article', 'panel analysis-panel'); panel.append(el('h3', '', '方案研判'));
+  const panel = el('article', 'panel analysis-panel'); panel.append(el('h3', '', '执行研判 · 需人工复核'), el('p', 'analysis-help', '以下为推进工作的补充意见。法律适用状态与原文依据以本版本“法律依据”中的核对项为准。'));
   if (ai.analysis) panel.append(el('p', '', ai.analysis));
   if (ai.strategy) panel.append(el('h4', '', '推进策略'), el('p', '', ai.strategy));
   if (ai.followUpQuestions?.length) panel.append(el('h4', '', '待进一步确认'), list(ai.followUpQuestions)); target.append(panel);
 }
 function renderActions(plan) {
-  const grid = el('div', 'action-grid'); const recommendations = aiFor(plan)?.recommendations || [];
+  const grid = el('div', 'action-grid'); const recommendations = aiFor(plan)?.recommendations || []; const review = legalReviewFor(plan);
   for (const [track, label] of Object.entries(trackNames)) {
     const actions = (plan.actions || []).filter((action) => action.track === track); const card = el('article', 'action-card');
     if (!actions.length) { card.append(el('div', 'action-kicker', label), el('h3', '', '本版本未设置专项动作'), el('p', '', '请根据实际项目情况核查是否需要安排。')); grid.append(card); continue; }
     for (const action of actions) {
-      const header = el('div', 'action-header'); const heading = el('div'); heading.append(el('div', 'action-kicker', label), el('h3', '', action.title)); header.append(heading, el('span', 'action-priority', action.priority));
-      card.append(header, el('p', '', action.reason), list(action.steps, true), el('div', 'action-meta', '负责人：' + action.owner));
-      const details = el('details'); details.append(el('summary', '', '适用条件与所需材料'), el('p', '', '适用条件：' + action.condition), el('p', '', '推进时间：' + action.timing), el('p', '', '材料：' + (action.materials || []).join('、'))); card.append(details, sourceLinks(action.sourceIds));
+      const kind = adviceKind(action, review); const findings = legalFindingsFor(plan, action); const isBusiness = kind === '业务建议';
+      const header = el('div', 'action-header'); const heading = el('div'); heading.append(el('div', 'action-kicker', kind + ' · ' + label), el('h3', '', !isBusiness && review ? findings[0]?.title || '本动作缺少法律核对记录' : action.title)); header.append(heading, el('span', 'action-priority', action.priority)); card.append(header);
+      if (isBusiness || !review) card.append(el('p', '', action.reason), list(action.steps, true));
+      if (findings.length) {
+        const grounding = el('div', 'action-grounding' + (isBusiness ? ' business-grounding' : '')); if (isBusiness) grounding.append(el('h4', '', '法律条件核对'));
+        for (const finding of findings) { const row = el('div', 'action-finding'); row.append(legalStatusTag(finding), el('p', '', finding.advice)); if (finding.missingEvidence?.length) row.append(el('p', 'action-finding-missing', '待补充或核实 ' + finding.missingEvidence.length + ' 项，详见法律依据。')); row.append(legalDetailButton(finding, '查看对应条文与适用理由')); grounding.append(row); }
+        card.append(grounding);
+      } else if (!isBusiness) card.append(el('p', 'action-legal-unavailable', review ? '本动作未保存逐条法律核对，需另行核实后执行。' : legacyLegalNotice));
+      card.append(el('div', 'action-meta', '负责人：' + action.owner));
+      const details = el('details');
+      if (!isBusiness && review) {
+        const tasks = legalReviewTasks(findings); details.append(el('summary', '', '核对任务' + (tasks.length ? ' · ' + tasks.length + ' 项' : '')));
+        if (tasks.length) details.append(list(tasks.slice(0, 5), true)); else details.append(el('p', '', '本动作尚无完整核对任务，需补充法律核对记录。'));
+        if (tasks.length > 5) details.append(el('p', '', '其余 ' + (tasks.length - 5) + ' 项及适用条件，请在法律依据中逐条查看。'));
+        if (findings.length) details.append(legalDetailButton(findings[0], '查看完整核对任务与条文'));
+      } else {
+        details.append(el('summary', '', isBusiness ? '协作条件与所需材料' : '执行安排与所需材料 · 需复核'), el('p', '', '适用条件：' + action.condition), el('p', '', '推进时间：' + action.timing), el('p', '', '材料：' + (action.materials || []).join('、')));
+      }
+      card.append(details);
     }
-    for (const recommendation of recommendations.filter((item) => item.track === track)) { const supplement = el('div', 'supplement-advice'); supplement.append(el('h4', '', '推进建议 · 需复核'), el('p', '', recommendation.advice), list(recommendation.steps, true), sourceLinks(recommendation.sourceIds)); card.append(supplement); }
+    for (const recommendation of recommendations.filter((item) => item.track === track)) {
+      const supplement = el('div', 'supplement-advice'); const isLegal = ['legal', 'complaint'].includes(track); const findings = legalRecommendationFindings(review, recommendation);
+      supplement.append(el('h4', '', isLegal ? recommendation.contentOrigin === 'review-template' ? '法律核对事项' : '执行补充 · 需人工复核' : '业务补充 · 需复核'));
+      if (isLegal && review && !findings.length) supplement.append(el('p', '', '该条补充未关联本版本有效核对项，需核实依据后再使用。'));
+      else { supplement.append(el('p', '', recommendation.advice), list(recommendation.steps, true)); if (isLegal) { supplement.append(el('p', 'supplement-basis', review ? '所依据的法律核对项：' + findings.map((finding) => finding.id).join('、') + '。本段不改变各核对项的适用状态。' : '历史补充意见未保存逐条法律核对。')); for (const finding of findings) supplement.append(legalDetailButton(finding, finding.id + ' · 查看依据')); } }
+      card.append(supplement);
+    }
     grid.append(card);
   }
   const timelinePanel = el('article', 'panel timeline-panel'); timelinePanel.append(el('h3', '', '建议推进顺序')); const timeline = el('div', 'timeline');
@@ -498,7 +639,7 @@ function renderLetter(plan) {
 function renderSnapshot(plan, run) {
   const panel = el('article', 'panel snapshot-panel'); panel.append(el('h3', '', '当时案情 · 资料版本 ' + run.revision)); const table = el('table', 'snapshot-table');
   for (const fact of plan.facts || []) { const row = el('tr'); row.append(el('th', '', fact.label), el('td', '', fact.value)); table.append(row); }
-  panel.append(table, el('p', 'report-footnote', '此处为生成该版本时的案情快照，当前基本信息请在“基本信息”中查看。')); $('#report-snapshot').replaceChildren(panel);
+  panel.append(table, el('p', 'report-footnote', '此处为生成该版本时的填报快照，内容均未核实；当前基本信息请在“基本信息”中查看。')); $('#report-snapshot').replaceChildren(panel);
 }
 function renderNotes() {
   const target = $('#notes-list'); target.replaceChildren(); const notes = active?.notes || [];
@@ -541,20 +682,32 @@ async function beginAnalysis() {
 }
 function reportText() {
   const run = currentRun(); if (!run) return '';
-  const plan = run.plan; const ai = aiFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
+  const plan = run.plan; const ai = aiFor(plan); const review = legalReviewFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
   const materials = runMaterials(run);
   lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
   for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
   lines.push('', '【整体推进建议】', plan.summary || '', plan.strategy || '', plan.priority?.label || '', plan.priority?.reason || '');
-  if (ai) lines.push('', '【方案研判】', ai.analysis || '', ai.strategy || '', ...(ai.followUpQuestions || []).map((item) => '待确认：' + item));
+  lines.push('', ...legalTraceText(plan));
+  if (ai) lines.push('', '【执行研判 · 需人工复核】', '法律适用状态与条文依据以本版本保存的法律核对项为准。', ai.analysis || '', ai.strategy || '', ...(ai.followUpQuestions || []).map((item) => '待确认：' + item));
   for (const action of plan.actions || []) {
-    lines.push('', '【' + trackNames[action.track] + '】' + action.title, '负责人：' + action.owner, '时间：' + action.timing, '原因：' + action.reason, ...(action.steps || []).map((step, index) => (index + 1) + '. ' + step), '适用条件：' + action.condition, '材料：' + (action.materials || []).join('、'));
-    for (const id of action.sourceIds || []) { const source = sourceMap.get(id); if (source) lines.push('官方来源：' + source.title, source.url, '定位：' + (source.articles?.join('、') || source.locator), '资料核查：' + source.verifiedAt); }
+    const kind = adviceKind(action, review); const findings = legalFindingsFor(plan, action);
+    const reviewedLegal = kind === '法律建议' && review;
+    lines.push('', '【' + kind + ' · ' + trackNames[action.track] + '】' + (reviewedLegal ? findings[0]?.title || '本动作缺少法律核对记录' : action.title), '负责人：' + action.owner);
+    if (!reviewedLegal) lines.push('时间：' + action.timing, '原因：' + action.reason);
+    for (const finding of findings) lines.push((kind === '业务建议' ? '法律条件核对' : '法律适用核对') + '：' + finding.id + ' · ' + legalStatusName(finding), '核对建议：' + finding.advice, '完整条文及适用理由：见上文核对项 ' + finding.id);
+    if (kind === '法律建议' && !findings.length) lines.push(review ? '本动作未保存逐条法律核对，需另行核实后执行。' : legacyLegalNotice);
+    if (reviewedLegal) lines.push('核对任务：', ...legalReviewTasks(findings).map((step, index) => (index + 1) + '. ' + step), '完整适用条件与条文：见上文核对项 ' + findings.map((finding) => finding.id).join('、'));
+    else lines.push('执行安排（需核实适用条件后决定）：', ...(action.steps || []).map((step, index) => (index + 1) + '. ' + step), '适用条件：' + action.condition, '材料：' + (action.materials || []).join('、'));
   }
-  for (const recommendation of ai?.recommendations || []) lines.push('', '【推进建议 · ' + trackNames[recommendation.track] + '】', recommendation.advice, ...(recommendation.steps || []).map((step) => '- ' + step));
+  for (const recommendation of ai?.recommendations || []) {
+    const isLegal = ['legal', 'complaint'].includes(recommendation.track); const findings = legalRecommendationFindings(review, recommendation);
+    lines.push('', '【' + (isLegal ? recommendation.contentOrigin === 'review-template' ? '法律核对事项' : '执行补充 · 需人工复核' : '业务补充 · 需复核') + ' · ' + trackNames[recommendation.track] + '】');
+    if (isLegal && review && !findings.length) lines.push('该条补充未关联本版本有效核对项，需核实依据后再使用。');
+    else { lines.push(recommendation.advice, ...(recommendation.steps || []).map((step) => '- ' + step)); if (isLegal) lines.push(review ? '所依据的核对项：' + findings.map((finding) => finding.id).join('、') + '；本段不改变各项适用状态。' : '历史补充意见未保存逐条法律核对。'); }
+  }
   lines.push('', '【推进顺序】', ...(plan.timeline || []).flatMap((stage) => [stage.phase + ' ' + stage.title, ...(stage.items || []).map((item) => '- ' + item)]), '', '【证据缺口】', ...(plan.missingInfo || []).map((item) => '- ' + item), '', '【材料准备清单】', ...(plan.evidenceChecklist || []).map((item) => (item.present ? '[当时填报已持有] ' : '[待准备] ') + item.label + '：' + item.reason), '', '【基础沟通函草稿】', plan.letterDraft || '');
   if (ai?.communicationDraft) lines.push('', '【沟通草稿 · 需复核】', ai.communicationDraft);
-  lines.push('', '【核查提醒】', ...(plan.caution || []), '', '【当前案件跟进记录】', ...(active.notes || []).map((note) => dateTime(note.createdAt) + ' ' + note.body), '', '生成服务：' + [plan.generation?.provider, plan.generation?.model].filter(Boolean).join(' / '), '生成说明：' + (plan.generation?.reason || '按本版本案情与选中材料生成'), '金额、日期、条件及官方来源由固定规则形成，方案研判、材料识别与草稿需人工复核；生成时未进行实时法律检索。');
+  lines.push('', '【核查提醒】', ...(plan.caution || []), '', '【当前案件跟进记录】', ...(active.notes || []).map((note) => dateTime(note.createdAt) + ' ' + note.body), '', '生成服务：' + [plan.generation?.provider, plan.generation?.model].filter(Boolean).join(' / '), '生成说明：' + (plan.generation?.reason || '按本版本案情与选中材料生成'), review ? '本次法律核对与条文版本已随方案保存；不等于律师审核、事实证明或责任认定。执行研判、材料识别与草稿需人工复核。' : legacyLegalNotice + '。历史内容需人工复核。');
   return lines.join('\n');
 }
 function renderSources() {

@@ -90,6 +90,11 @@ test('analysis resolves only current-case file IDs and never forwards another ca
   assert.equal(payload.run.recordId, a.id);
   assert.deepEqual(payload.run.attachmentIds, [ua.attachment.id]);
   assert.equal(payload.record.runs.length, 1);
+  assert.ok(payload.run.plan.legalReview.findings.length > 0);
+  assert.deepEqual(payload.run.plan.legalReview, payload.plan.legalReview);
+  const reloaded = (await (await call(env, '/records/' + a.id)).json()).record;
+  assert.deepEqual(reloaded.runs[0].plan.legalReview, payload.plan.legalReview, 'law text and version survive a stored snapshot reload');
+  assert.doesNotMatch(JSON.stringify(reloaded.runs[0].plan.legalReview), /BETA-ONLY/);
   assert.equal((await (await call(env, '/records/' + b.id)).json()).record.runs.length, 0);
 });
 
@@ -107,6 +112,8 @@ test('an in-flight result archives its original snapshot without overwriting lat
   const result = await (await work).json();
   assert.equal(result.stale, true); assert.equal(result.run.inputSnapshot.amount, 35000);
   assert.equal(result.record.input.amount, 99000); assert.equal(result.run.recordId, record.id);
+  assert.match(JSON.stringify(result.run.plan.legalReview.facts), /35000/);
+  assert.doesNotMatch(JSON.stringify(result.run.plan.legalReview.facts), /99000/);
 });
 
 test('stale edits and duplicate in-flight analysis cannot overwrite a record', async (t) => {

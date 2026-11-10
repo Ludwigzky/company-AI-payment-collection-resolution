@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   RecordError, ATTACHMENT_LIMITS, listRecords, createRecord, getRecord, updateRecord,
-  addAttachment, getAttachment, removeAttachment, saveRun, addNote, serializeRecord,
+  addAttachment, getAttachment, removeAttachment, saveRun, addNote, serializeRecord, validateRecordInput,
 } from '../src/records.js';
 
 const migrations = new URL('../drizzle/', import.meta.url);
@@ -57,6 +57,16 @@ function fixture(t) {
 const rejectStatus = async (operation, status) => assert.rejects(operation, (error) => error instanceof RecordError && error.status === status);
 const file = (overrides = {}) => ({ name: '合同.pdf', mime: 'application/pdf', size: 1024, sha256: 'a'.repeat(64), objectKey: `private/${crypto.randomUUID()}`, ...overrides });
 const snapshot = (record, overrides = {}) => ({ revision: record.revision, inputSnapshot: record.input, attachmentIds: [], plan: { strategy: '核对资料及付款条件。' }, ...overrides });
+
+test('optional legal dates preserve empty drafts and reject impossible calendar dates', () => {
+  const dates = { contractDate: '2026-03-01', legalFactDate: '2026-04-01', arbitrationAgreementDate: '' };
+  assert.deepEqual(validateRecordInput(dates), dates);
+  for (const field of Object.keys(dates)) {
+    for (const invalid of ['2026-02-30', '2026-13-01', '2026-1-1', '1899-01-01', null]) {
+      assert.throws(() => validateRecordInput({ [field]: invalid }), RecordError);
+    }
+  }
+});
 
 test('empty database has no seeded cases; incomplete drafts and parameterized literal search persist', async (t) => {
   const { env } = fixture(t);

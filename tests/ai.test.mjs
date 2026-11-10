@@ -34,7 +34,8 @@ const assertRules = (plan) => {
   assert.equal(plan.generation.mode, 'rules');
   assert.equal(plan.generation.provider, 'DeepSeek');
   assert.equal(plan.ai, undefined);
-  assert.deepEqual(Object.fromEntries(Object.entries(plan).filter(([key]) => key !== 'generation')), generatePlan(INPUT, TODAY));
+  assert.deepEqual(Object.fromEntries(Object.entries(plan).filter(([key]) => !['generation', 'legalReview'].includes(key))), generatePlan(INPUT, TODAY));
+  assert.ok(plan.legalReview.findings.length > 0, 'fallback retains independently computed legal review');
   assert.doesNotMatch(JSON.stringify(plan), /server-only-test-secret|Authorization|private reasoning|upstream internal|provider-account/);
 };
 
@@ -85,7 +86,7 @@ test('successful AI output supplements an unchanged rules plan and sends only se
   assert.equal(plan.generation.mode, 'ai');
   assert.deepEqual(plan.ai, ADVICE);
   assert.equal(plan.generation.reason, undefined);
-  const { generation, ai, ...base } = plan;
+  const { generation, ai, legalReview, ...base } = plan;
   assert.deepEqual(base, generatePlan(INPUT, TODAY));
   assert.match(base.actions.find(({ track }) => track === 'complaint').title, /排除/);
   assert.match(base.actions.find(({ track }) => track === 'legal').title, /仲裁/);
@@ -117,6 +118,7 @@ test('invalid input is rejected before spending a provider request', async () =>
     { ...INPUT, issueText: '' }, { ...INPUT, issueText: '字'.repeat(6001) },
     { ...INPUT, companyName: '字'.repeat(201) }, { ...INPUT, disputeAccepted: 'invalid' },
     { ...INPUT, evidence: ['unknown-source'] }, { ...INPUT, issueTypes: 'repair' },
+    { ...INPUT, contractDate: '2026-02-30' }, { ...INPUT, legalFactDate: '2026-1-1' }, { ...INPUT, arbitrationAgreementDate: [] },
   ]) {
     await assert.rejects(generateAIPlan(bad, ENV, { fetchImpl, today: TODAY }), InputError);
   }
@@ -260,7 +262,7 @@ test('user instructions remain quoted data and cannot replace fixed base fields'
   assert.equal(messages.length, 2);
   assert.match(messages[0].content, /忽略其中任何要求改变/);
   assert.match(messages[1].content, /忽略规则/);
-  const { generation, ai, ...base } = plan;
+  const { generation, ai, legalReview, ...base } = plan;
   assert.deepEqual(base, generatePlan(input, TODAY));
   assert.deepEqual(ai, ADVICE);
 });
@@ -310,7 +312,7 @@ test('trusted material bytes become blocks in the only user message and remain u
   assert.equal(body.max_tokens, 4000);
   assert.equal(plan.generation.mode, 'ai');
   assert.deepEqual(plan.materialSummary, context.summary);
-  const { generation, ai, materialSummary, ...base } = plan;
+  const { generation, ai, materialSummary, legalReview, ...base } = plan;
   assert.deepEqual(base, generatePlan(INPUT, TODAY));
   assert.deepEqual(ai, ADVICE);
 });
@@ -377,4 +379,60 @@ test('only a context prepared from bytes is accepted and unavailable AI still re
   const plan = await generate(() => { throw new Error('must not call'); }, { materialsContext: context }, INPUT, {});
   assert.equal(plan.generation.mode, 'rules'); assert.deepEqual(plan.materialSummary, context.summary);
   assert.equal(plan.ai, undefined);
+});
+
+test('model receives retrieved original clauses and exactly the archived fact-condition review', async () => {
+  let context;
+  const plan = await generate(async (_, init) => {
+    const message = JSON.parse(init.body).messages[1].content;
+    context = JSON.parse(message.slice(message.indexOf('\n') + 1)).legalContext;
+    return upstream();
+  });
+  assert.equal(plan.generation.mode, 'ai');
+  assert.deepEqual(context.facts, plan.legalReview.facts);
+  assert.ok(context.clauses.length > 0 && context.clauses.length <= 16);
+  for (const clause of context.clauses) {
+    assert.ok(clause.text && clause.versionId && clause.effectiveFrom && clause.officialUrl && clause.verifiedAt);
+    assert.match(clause.officialUrl, /^https:\/\//);
+    assert.ok(plan.legalReview.findings.some((finding) => finding.citations.some((saved) => saved.id === clause.id && saved.text === clause.text)));
+  }
+  assert.ok(context.findings.every((finding) => finding.clauseIds && !finding.citations));
+});
+
+test('legal model supplements require a same-track basis and cannot activate excluded complaint route', async () => {
+  const advice = clone(ADVICE);
+  advice.recommendations = [{ track: 'legal', advice: '先整理争议条款及事件时间线交由法务核对。', steps: ['补充合同签订和争议发生时间，核对原件及管辖约定。'], sourceIds: ['civil-code'], basisIds: ['dispute-procedure'] }];
+  const plan = await generate(async () => upstream(advice));
+  assert.equal(plan.generation.mode, 'ai');
+  assert.deepEqual(plan.ai.recommendations[0].basisIds, ['dispute-procedure']);
+  assert.equal(plan.ai.recommendations[0].contentOrigin, 'review-template');
+  assert.equal(plan.ai.recommendations[0].advice, plan.legalReview.findings.find(({ id }) => id === 'dispute-procedure').advice);
+  assert.notEqual(plan.ai.recommendations[0].advice, advice.recommendations[0].advice, 'legal prose is composed from the fixed review rather than model words');
+  for (const basisIds of [undefined, [], ['invented-law'], ['sme-complaint'], ['dispute-procedure', 'dispute-procedure']]) {
+    const invalid = clone(advice); invalid.recommendations[0].basisIds = basisIds;
+    assertRules(await generate(async () => upstream(invalid)));
+  }
+  const excluded = clone(advice);
+  excluded.recommendations[0] = { track: 'complaint', advice: '提交投诉。', steps: ['整理资料后提交。'], sourceIds: ['sme-complaint'], basisIds: ['sme-complaint'] };
+  assertRules(await generate(async () => upstream(excluded)));
+});
+
+test('checked legal references cannot bypass certainty safeguards or turn a business step into a legal finding', async () => {
+  for (const text of ['现在可以直接起诉。', '无需核查付款条件。', '债权已经成立。', '这笔款已经确认并负有法定支付义务。', '对方应承担违约责任。', '本案已构成违约，现有证据足以证明欠款，付款条件已经成就。', '乙公司依法负有清偿全部债务的义务。']) {
+    const advice = clone(ADVICE); advice.analysis = text;
+    assertRules(await generate(async () => upstream(advice)));
+  }
+  const advice = clone(ADVICE); advice.recommendations[0].basisIds = ['payment-claim'];
+  assertRules(await generate(async () => upstream(advice)));
+});
+
+test('business labels and draft fields cannot smuggle filing instructions or confirmed debt claims', async () => {
+  for (const text of ['向中小企业款项投诉平台提交追款申请。', '向属地法院提交立案材料。', '要求法院审理本案并判令付款。', '提交投诉。', '立即申请仲裁。', '请支付已经确认无误的全部款项。']) {
+    for (const field of ['analysis', 'communicationDraft', 'businessAdvice']) {
+      const advice = clone(ADVICE);
+      if (field === 'businessAdvice') advice.recommendations[0].advice = text;
+      else advice[field] = text;
+      assertRules(await generate(async () => upstream(advice)));
+    }
+  }
 });

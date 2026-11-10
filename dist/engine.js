@@ -77,6 +77,10 @@ export function generatePlan(input, today = '2026-11-10') {
   }
   const dueTimestamp = dateValue(input.dueDate, '付款到期日');
   const todayTimestamp = dateValue(today, '分析日期');
+  const legalDates = [
+    ['contractDate', '合同签订日'], ['legalFactDate', '本次主张的法律事实发生日'], ['arbitrationAgreementDate', '仲裁协议订立日'],
+  ];
+  for (const [field, label] of legalDates) if (input[field]) dateValue(input[field], label);
   const description = text(input.issueText);
   if (!description) throw new Error('请描述项目目前存在的问题。');
   if (description.length > 6000) throw new Error('项目问题请控制在6000字以内。');
@@ -286,6 +290,7 @@ export function generatePlan(input, today = '2026-11-10') {
       { label: '业务类型', value: projectLabel },
       { label: '填报金额', value: `¥${money(amount)}（待对账）` },
       { label: '填报付款到期日', value: input.dueDate },
+      ...legalDates.filter(([field]) => input[field]).map(([field, label]) => ({ label: `${label}（用户填报，待核验）`, value: input[field] })),
       { label: '相对分析日期', value: dueLabel },
       { label: '付款方类型', value: `${debtorLabel}（用户选择）` },
       { label: '验收 / 结算状态', value: acceptanceLabel },

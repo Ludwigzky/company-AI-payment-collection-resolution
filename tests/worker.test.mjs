@@ -35,6 +35,12 @@ test('deployed Worker retains rule fallback and applies same-origin API validati
   assert.equal(payload.plan.amount, 12000);
   assert.equal(payload.plan.generation.mode, 'rules');
   assert.equal(payload.plan.ai, undefined);
+  assert.equal(payload.plan.legalReview.schemaVersion, '1.0');
+  const payment = payload.plan.legalReview.findings.find(({ id }) => id === 'payment-claim');
+  assert.equal(payment.status, 'insufficient');
+  const statute = payment.citations.find(({ id }) => id === 'civil-579');
+  assert.match(statute.text, /未支付价款/);
+  assert.ok(statute.officialUrl && statute.versionId && statute.verifiedAt);
   const crossOrigin = await worker.fetch(new Request(origin + '/api/plan', { ...options, headers: { ...options.headers, Origin: 'https://another.example' } }), {});
   assert.equal(crossOrigin.status, 403);
 });

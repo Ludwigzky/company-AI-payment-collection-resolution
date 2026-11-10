@@ -21,7 +21,7 @@ const INPUT_ARRAYS = Object.freeze({
   issueTypes: ['repair', 'acceptance', 'invoice', 'cashflow', 'dispute', 'unresponsive'],
   evidence: ['contract', 'delivery', 'acceptance', 'invoice', 'reconciliation', 'collection', 'repair'],
 });
-const INPUT_FIELDS = new Set(['companyName', 'debtorName', 'amount', 'dueDate', 'issueText', ...Object.keys(INPUT_CHOICES), ...Object.keys(INPUT_ARRAYS)]);
+const INPUT_FIELDS = new Set(['companyName', 'debtorName', 'amount', 'dueDate', 'contractDate', 'legalFactDate', 'arbitrationAgreementDate', 'issueText', ...Object.keys(INPUT_CHOICES), ...Object.keys(INPUT_ARRAYS)]);
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const CHINA_DATE = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -79,15 +79,16 @@ export function validateRecordInput(value = {}) {
     }
     result.amount = value.amount;
   }
-  if (value.dueDate !== undefined) {
-    const date = string(value.dueDate, 10, '到期日');
+  for (const field of ['dueDate', 'contractDate', 'legalFactDate', 'arbitrationAgreementDate']) {
+    if (value[field] === undefined) continue;
+    const date = string(value[field], 10, '项目相关日期');
     if (date !== '') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new RecordError(400, '到期日格式无效。');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new RecordError(400, '项目相关日期格式无效。');
       const [year, month, day] = date.split('-').map(Number);
       const parsed = new Date(Date.UTC(year, month - 1, day));
-      if (year < 1900 || year > 2199 || parsed.toISOString().slice(0, 10) !== date) throw new RecordError(400, '到期日格式无效。');
+      if (year < 1900 || year > 2199 || parsed.toISOString().slice(0, 10) !== date) throw new RecordError(400, '项目相关日期格式无效。');
     }
-    result.dueDate = date;
+    result[field] = date;
   }
   for (const [key, choices] of Object.entries(INPUT_CHOICES)) {
     if (value[key] === undefined) continue;
