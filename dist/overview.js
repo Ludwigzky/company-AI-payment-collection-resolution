@@ -56,7 +56,7 @@ export async function refreshOverview() {
 export function overviewReportText() {
   if (!state.payload.today) return '应收总览尚未成功载入，请刷新后打印。';
   const p = state.payload; const s = p.summary || {};
-  const lines = ['应收账款管理平台 · 应收总览', '当前账号的已登记数据 · 归档不代表结清', '统计日期：' + (p.today || '尚未加载'), '案件范围：' + ({ all: '全部（含已归档）', active: '进行中', archived: '已归档' }[state.filters?.caseStatus] || '全部'), '搜索条件：' + (state.filters?.q || '无'), '金额按各节点登记的截至日期汇总；只合计已知有效部分，不代表实时余额。', '', '净开票登记额：' + money(s.invoiceNetAmount), '财务确认应收余额：' + money(s.financeBalance), '已确认节点未收金额：' + money(s.paymentUnpaidAmount), '已到期逾期未收金额：' + money(s.overdueAmount), '未登记有效付款节点案件数：' + (s.recordsWithoutLedgerCount ?? '待加载')];
+  const lines = ['企业 AI 回款方案工作台 · 应收总览', '当前账号的已登记数据 · 归档不代表结清', '统计日期：' + (p.today || '尚未加载'), '案件范围：' + ({ all: '全部（含已归档）', active: '进行中', archived: '已归档' }[state.filters?.caseStatus] || '全部'), '搜索条件：' + (state.filters?.q || '无'), '金额按各节点登记的截至日期汇总；只合计已知有效部分，不代表实时余额。', '', '净开票登记额：' + money(s.invoiceNetAmount), '财务确认应收余额：' + money(s.financeBalance), '已确认节点未收金额：' + money(s.paymentUnpaidAmount), '已到期逾期未收金额：' + money(s.overdueAmount), '未登记有效付款节点案件数：' + (s.recordsWithoutLedgerCount ?? '待加载')];
   for (const l of p.ledgers || []) {
     const d = l.data || {}; const m = l.metrics || {}; const f = d.finance || {}; const due = d.payment || {};
     lines.push('', '【付款节点】' + (d.title || '未命名'), recordName(recordFor(l.recordId)), '节点状态：' + (d.status === 'voided' ? '已作废，不计入统计；' + (d.voidReason || '') : '有效登记') + ' · 版本 ' + l.revision, '开票情况：' + (labels.invoice[d.invoiceStatus] || '待确认') + '；净开票登记额：' + money(m.invoiceNetAmount));
