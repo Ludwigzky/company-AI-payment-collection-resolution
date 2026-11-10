@@ -26,7 +26,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); res.end(); return; }
-    if (!['/', '/index.html', '/styles.css', '/app.js', '/engine.js', '/sources.js', '/favicon.svg'].includes(pathname)) { res.writeHead(404); res.end(); return; }
+    if (!['/', '/index.html', '/styles.css', '/app.js', '/overview.js', '/engine.js', '/sources.js', '/favicon.svg'].includes(pathname)) { res.writeHead(404); res.end(); return; }
     const filename = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!filename.startsWith(root + path.sep) && filename !== path.join(root, 'index.html')) { res.writeHead(403); res.end(); return; }
     const data = await readFile(filename);

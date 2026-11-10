@@ -72,3 +72,55 @@ export const recoveryNotes = sqliteTable('recovery_notes', {
   uniqueIndex('recovery_notes_owner_record_id_unique').on(table.ownerId, table.recordId, table.id),
   index('recovery_notes_owner_record_created_idx').on(table.ownerId, table.recordId, table.createdAt),
 ]);
+
+export const recoveryReceivables = sqliteTable('recovery_receivables', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull(),
+  recordId: text('record_id').notNull(),
+  revision: integer('revision').notNull().default(1),
+  dataJson: text('data_json').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  foreignKey({ columns: [table.ownerId, table.recordId], foreignColumns: [recoveryRecords.ownerId, recoveryRecords.id], name: 'recovery_receivables_parent_fk' }),
+  uniqueIndex('recovery_receivables_owner_record_id_unique').on(table.ownerId, table.recordId, table.id),
+  index('recovery_receivables_owner_record_updated_idx').on(table.ownerId, table.recordId, table.updatedAt),
+  check('recovery_receivables_revision_check', sql`${table.revision} >= 1`),
+  check('recovery_receivables_data_json_check', sql`json_valid(${table.dataJson})`),
+]);
+
+export const recoveryReceivableHistory = sqliteTable('recovery_receivable_history', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull(),
+  recordId: text('record_id').notNull(),
+  receivableId: text('receivable_id').notNull(),
+  revision: integer('revision').notNull(),
+  dataJson: text('data_json').notNull(),
+  changeReason: text('change_reason').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  foreignKey({ columns: [table.ownerId, table.recordId, table.receivableId], foreignColumns: [recoveryReceivables.ownerId, recoveryReceivables.recordId, recoveryReceivables.id], name: 'recovery_receivable_history_parent_fk' }),
+  uniqueIndex('recovery_receivable_history_revision_unique').on(table.ownerId, table.receivableId, table.revision),
+  index('recovery_receivable_history_owner_record_idx').on(table.ownerId, table.recordId, table.createdAt),
+  check('recovery_receivable_history_revision_check', sql`${table.revision} >= 1`),
+  check('recovery_receivable_history_data_json_check', sql`json_valid(${table.dataJson})`),
+]);
+
+export const recoveryLegalEvents = sqliteTable('recovery_legal_events', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull(),
+  recordId: text('record_id').notNull(),
+  receivableId: text('receivable_id'),
+  supersedesId: text('supersedes_id'),
+  dataJson: text('data_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  foreignKey({ columns: [table.ownerId, table.recordId], foreignColumns: [recoveryRecords.ownerId, recoveryRecords.id], name: 'recovery_legal_events_parent_fk' }),
+  foreignKey({ columns: [table.ownerId, table.recordId, table.receivableId], foreignColumns: [recoveryReceivables.ownerId, recoveryReceivables.recordId, recoveryReceivables.id], name: 'recovery_legal_events_receivable_fk' }),
+  foreignKey({ columns: [table.ownerId, table.recordId, table.supersedesId], foreignColumns: [table.ownerId, table.recordId, table.id], name: 'recovery_legal_events_supersedes_fk' }),
+  uniqueIndex('recovery_legal_events_owner_record_id_unique').on(table.ownerId, table.recordId, table.id),
+  uniqueIndex('recovery_legal_events_supersedes_unique').on(table.ownerId, table.supersedesId),
+  index('recovery_legal_events_owner_record_created_idx').on(table.ownerId, table.recordId, table.createdAt),
+  check('recovery_legal_events_data_json_check', sql`json_valid(${table.dataJson})`),
+  check('recovery_legal_events_not_self_check', sql`${table.supersedesId} IS NULL OR ${table.supersedesId} != ${table.id}`),
+]);

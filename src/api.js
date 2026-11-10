@@ -1,5 +1,6 @@
 import { generateAIPlan, getAIConfiguration, InputError } from './ai.js';
 import { handleWorkspaceAPI } from './workspace-api.js';
+import { handleOverviewAPI } from './overview-store.js';
 
 const BODY_LIMIT = 32 * 1024;
 const HEADERS = {
@@ -46,6 +47,7 @@ export async function handleAPI(request, env = {}, options = {}) {
     return json({ error: '请从本站页面提交请求。' }, 403);
   }
   const route = url.pathname;
+  if (route === '/api/overview' || route.startsWith('/api/overview/')) return handleOverviewAPI(request, env, options);
   if (route === '/api/records' || route.startsWith('/api/records/')) return handleWorkspaceAPI(request, env, options);
   if (route === '/api/plan' && env.DB) return json({ error: '请在案件记录内生成方案，确保材料与结果归档。' }, 409);
   if (route !== '/api/health' && route !== '/api/plan') return json({ error: '接口不存在。' }, 404);

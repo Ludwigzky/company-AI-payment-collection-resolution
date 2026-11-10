@@ -1,5 +1,6 @@
 import { generatePlan } from './engine.js';
 import { SOURCES } from './sources.js';
+import { initOverview, refreshOverview, overviewReportText } from './overview.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -163,6 +164,7 @@ function saveDraft(options) { return queueWrite(() => saveDraftNow(options)); }
 function showView(view) {
   $$('.view').forEach((node) => { node.hidden = node.id !== view + '-view'; });
   $$('[data-view]').forEach((node) => { node.classList.toggle('active', node.dataset.view === view); if (node.dataset.view === view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current'); });
+  if (view === 'overview') void refreshOverview();
 }
 function selectCaseTab(tab) {
   caseTab = tab;
@@ -761,7 +763,7 @@ $('#note-form').addEventListener('submit', async (event) => {
 });
 $('#export-button').addEventListener('click', () => { const run = currentRun(); if (!run) return; const url = URL.createObjectURL(new Blob(['\uFEFF' + reportText()], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = '回款方案-' + active.number + '-资料v' + run.revision + '-' + run.id.slice(0, 8) + '.txt'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
 $('#print-button').addEventListener('click', () => { if (!currentRun()) return; $('#print-report').textContent = reportText(); window.print(); });
-window.addEventListener('beforeprint', () => { $('#print-report').textContent = reportText(); });
+window.addEventListener('beforeprint', () => { $('#print-report').textContent = !$('#overview-view').hidden ? overviewReportText() : reportText(); });
 window.addEventListener('beforeunload', (event) => { if (dirty || pendingWrites > 0) { event.preventDefault(); event.returnValue = ''; } });
 $('#history-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadHistory(), 250); });
 $('#refresh-history').addEventListener('click', () => loadHistory());
@@ -771,4 +773,5 @@ $('.brand').addEventListener('click', (event) => { event.preventDefault(); showV
 $$('[data-case-tab]').forEach((node) => node.addEventListener('click', () => { if (!navigating) selectCaseTab(node.dataset.caseTab); }));
 $$('[data-report-tab]').forEach((node) => node.addEventListener('click', () => selectReportTab(node.dataset.reportTab)));
 tabKeyboard($$('[data-case-tab]'), (node) => { if (!navigating) selectCaseTab(node.dataset.caseTab); }); tabKeyboard($$('[data-report-tab]'), (node) => selectReportTab(node.dataset.reportTab));
+initOverview({ api, openRecord: async (id) => { await navigate(id); if (!$('#overview-view').hidden && !$('#workspace-error').hidden) throw new Error($('#workspace-error').textContent); } });
 fillForm(null); renderSources(); renderCurrent(); selectCaseTab(caseTab); checkHealth(); loadHistory({ initial: true });

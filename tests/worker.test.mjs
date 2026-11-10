@@ -4,7 +4,7 @@ import worker from '../dist/server/index.js';
 
 const origin = 'https://recovery.example';
 test('deployed Worker serves embedded public assets with appropriate MIME types', async () => {
-  for (const [pathname, type] of [['/', 'text/html'], ['/app.js', 'text/javascript'], ['/styles.css', 'text/css'], ['/engine.js', 'text/javascript'], ['/sources.js', 'text/javascript'], ['/favicon.svg', 'image/svg+xml']]) {
+  for (const [pathname, type] of [['/', 'text/html'], ['/app.js', 'text/javascript'], ['/overview.js', 'text/javascript'], ['/styles.css', 'text/css'], ['/engine.js', 'text/javascript'], ['/sources.js', 'text/javascript'], ['/favicon.svg', 'image/svg+xml']]) {
     const response = await worker.fetch(new Request(origin + pathname), {});
     assert.equal(response.status, 200);
     assert.ok(response.headers.get('Content-Type').startsWith(type));

@@ -1,0 +1,840 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "31af0084-9517-4dd7-ba6f-7e5f4bc8557a",
+  "prevId": "519c0268-8859-447e-8996-7716556e5b51",
+  "tables": {
+    "recovery_attachments": {
+      "name": "recovery_attachments",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mime": {
+          "name": "mime",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size": {
+          "name": "size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_attachments_owner_record_id_unique": {
+          "name": "recovery_attachments_owner_record_id_unique",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_attachments_object_key_unique": {
+          "name": "recovery_attachments_object_key_unique",
+          "columns": [
+            "object_key"
+          ],
+          "isUnique": true
+        },
+        "recovery_attachments_owner_record_active_idx": {
+          "name": "recovery_attachments_owner_record_active_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "removed_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_attachments_parent_fk": {
+          "name": "recovery_attachments_parent_fk",
+          "tableFrom": "recovery_attachments",
+          "tableTo": "recovery_records",
+          "columnsFrom": [
+            "owner_id",
+            "record_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_attachments_size_check": {
+          "name": "recovery_attachments_size_check",
+          "value": "\"recovery_attachments\".\"size\" > 0 AND \"recovery_attachments\".\"size\" <= 5242880"
+        }
+      }
+    },
+    "recovery_legal_events": {
+      "name": "recovery_legal_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receivable_id": {
+          "name": "receivable_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "supersedes_id": {
+          "name": "supersedes_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "data_json": {
+          "name": "data_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_legal_events_owner_record_id_unique": {
+          "name": "recovery_legal_events_owner_record_id_unique",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_legal_events_supersedes_unique": {
+          "name": "recovery_legal_events_supersedes_unique",
+          "columns": [
+            "owner_id",
+            "supersedes_id"
+          ],
+          "isUnique": true
+        },
+        "recovery_legal_events_owner_record_created_idx": {
+          "name": "recovery_legal_events_owner_record_created_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_legal_events_parent_fk": {
+          "name": "recovery_legal_events_parent_fk",
+          "tableFrom": "recovery_legal_events",
+          "tableTo": "recovery_records",
+          "columnsFrom": [
+            "owner_id",
+            "record_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recovery_legal_events_receivable_fk": {
+          "name": "recovery_legal_events_receivable_fk",
+          "tableFrom": "recovery_legal_events",
+          "tableTo": "recovery_receivables",
+          "columnsFrom": [
+            "owner_id",
+            "record_id",
+            "receivable_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recovery_legal_events_supersedes_fk": {
+          "name": "recovery_legal_events_supersedes_fk",
+          "tableFrom": "recovery_legal_events",
+          "tableTo": "recovery_legal_events",
+          "columnsFrom": [
+            "owner_id",
+            "record_id",
+            "supersedes_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_legal_events_data_json_check": {
+          "name": "recovery_legal_events_data_json_check",
+          "value": "json_valid(\"recovery_legal_events\".\"data_json\")"
+        },
+        "recovery_legal_events_not_self_check": {
+          "name": "recovery_legal_events_not_self_check",
+          "value": "\"recovery_legal_events\".\"supersedes_id\" IS NULL OR \"recovery_legal_events\".\"supersedes_id\" != \"recovery_legal_events\".\"id\""
+        }
+      }
+    },
+    "recovery_notes": {
+      "name": "recovery_notes",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_notes_owner_record_id_unique": {
+          "name": "recovery_notes_owner_record_id_unique",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_notes_owner_record_created_idx": {
+          "name": "recovery_notes_owner_record_created_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_notes_parent_fk": {
+          "name": "recovery_notes_parent_fk",
+          "tableFrom": "recovery_notes",
+          "tableTo": "recovery_records",
+          "columnsFrom": [
+            "owner_id",
+            "record_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "recovery_receivable_history": {
+      "name": "recovery_receivable_history",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receivable_id": {
+          "name": "receivable_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "data_json": {
+          "name": "data_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "change_reason": {
+          "name": "change_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_receivable_history_revision_unique": {
+          "name": "recovery_receivable_history_revision_unique",
+          "columns": [
+            "owner_id",
+            "receivable_id",
+            "revision"
+          ],
+          "isUnique": true
+        },
+        "recovery_receivable_history_owner_record_idx": {
+          "name": "recovery_receivable_history_owner_record_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_receivable_history_parent_fk": {
+          "name": "recovery_receivable_history_parent_fk",
+          "tableFrom": "recovery_receivable_history",
+          "tableTo": "recovery_receivables",
+          "columnsFrom": [
+            "owner_id",
+            "record_id",
+            "receivable_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_receivable_history_revision_check": {
+          "name": "recovery_receivable_history_revision_check",
+          "value": "\"recovery_receivable_history\".\"revision\" >= 1"
+        },
+        "recovery_receivable_history_data_json_check": {
+          "name": "recovery_receivable_history_data_json_check",
+          "value": "json_valid(\"recovery_receivable_history\".\"data_json\")"
+        }
+      }
+    },
+    "recovery_receivables": {
+      "name": "recovery_receivables",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "data_json": {
+          "name": "data_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_receivables_owner_record_id_unique": {
+          "name": "recovery_receivables_owner_record_id_unique",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_receivables_owner_record_updated_idx": {
+          "name": "recovery_receivables_owner_record_updated_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "updated_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_receivables_parent_fk": {
+          "name": "recovery_receivables_parent_fk",
+          "tableFrom": "recovery_receivables",
+          "tableTo": "recovery_records",
+          "columnsFrom": [
+            "owner_id",
+            "record_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_receivables_revision_check": {
+          "name": "recovery_receivables_revision_check",
+          "value": "\"recovery_receivables\".\"revision\" >= 1"
+        },
+        "recovery_receivables_data_json_check": {
+          "name": "recovery_receivables_data_json_check",
+          "value": "json_valid(\"recovery_receivables\".\"data_json\")"
+        }
+      }
+    },
+    "recovery_records": {
+      "name": "recovery_records",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "number": {
+          "name": "number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'active'"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "input_json": {
+          "name": "input_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_records_owner_id_unique": {
+          "name": "recovery_records_owner_id_unique",
+          "columns": [
+            "owner_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_records_owner_number_unique": {
+          "name": "recovery_records_owner_number_unique",
+          "columns": [
+            "owner_id",
+            "number"
+          ],
+          "isUnique": true
+        },
+        "recovery_records_owner_status_updated_idx": {
+          "name": "recovery_records_owner_status_updated_idx",
+          "columns": [
+            "owner_id",
+            "status",
+            "updated_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_records_status_check": {
+          "name": "recovery_records_status_check",
+          "value": "\"recovery_records\".\"status\" IN ('active', 'archived')"
+        },
+        "recovery_records_revision_check": {
+          "name": "recovery_records_revision_check",
+          "value": "\"recovery_records\".\"revision\" >= 1"
+        },
+        "recovery_records_input_json_check": {
+          "name": "recovery_records_input_json_check",
+          "value": "json_valid(\"recovery_records\".\"input_json\")"
+        }
+      }
+    },
+    "recovery_runs": {
+      "name": "recovery_runs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "record_id": {
+          "name": "record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "input_json": {
+          "name": "input_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attachment_ids_json": {
+          "name": "attachment_ids_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[]'"
+        },
+        "plan_json": {
+          "name": "plan_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "material_summary_json": {
+          "name": "material_summary_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'null'"
+        },
+        "snapshot_stale": {
+          "name": "snapshot_stale",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "recovery_runs_owner_record_id_unique": {
+          "name": "recovery_runs_owner_record_id_unique",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "id"
+          ],
+          "isUnique": true
+        },
+        "recovery_runs_owner_record_created_idx": {
+          "name": "recovery_runs_owner_record_created_idx",
+          "columns": [
+            "owner_id",
+            "record_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "recovery_runs_parent_fk": {
+          "name": "recovery_runs_parent_fk",
+          "tableFrom": "recovery_runs",
+          "tableTo": "recovery_records",
+          "columnsFrom": [
+            "owner_id",
+            "record_id"
+          ],
+          "columnsTo": [
+            "owner_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "recovery_runs_revision_check": {
+          "name": "recovery_runs_revision_check",
+          "value": "\"recovery_runs\".\"revision\" >= 1"
+        },
+        "recovery_runs_input_json_check": {
+          "name": "recovery_runs_input_json_check",
+          "value": "json_valid(\"recovery_runs\".\"input_json\")"
+        },
+        "recovery_runs_attachments_json_check": {
+          "name": "recovery_runs_attachments_json_check",
+          "value": "json_valid(\"recovery_runs\".\"attachment_ids_json\")"
+        },
+        "recovery_runs_plan_json_check": {
+          "name": "recovery_runs_plan_json_check",
+          "value": "json_valid(\"recovery_runs\".\"plan_json\")"
+        },
+        "recovery_runs_material_json_check": {
+          "name": "recovery_runs_material_json_check",
+          "value": "json_valid(\"recovery_runs\".\"material_summary_json\")"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}
