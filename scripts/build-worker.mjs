@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const publicAssets = ['index.html', 'styles.css', 'app.js', 'overview.js', 'engine.js', 'sources.js', 'favicon.svg'];
+const publicAssets = ['index.html', 'styles.css', 'app.js', 'overview.js', 'provider.js', 'engine.js', 'sources.js', 'favicon.svg'];
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 const assets = Object.fromEntries(await Promise.all(publicAssets.map(async (file) => [
   '/' + file,

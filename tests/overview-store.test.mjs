@@ -251,7 +251,8 @@ test('new migrations upgrade an existing local database and durable ledgers/even
   await updateLedger(env, owner, ledger.id, { revision: 1, data: { ...ledger.data, note: '已保存修订' }, changeReason: '补充说明' });
   await createLegalEvent(env, owner, { recordId: record.id, ledgerId: ledger.id, data: eventData() }, today);
   const before = await getOverview(env, owner, {}, today); const beforeHistory = await getLedgerHistory(env, owner, ledger.id);
-  assert.equal(env.DB.database.prepare('SELECT count(*) AS n FROM _local_migrations').get().n, 2);
+  const expectedMigrations = JSON.parse(readFileSync(new URL('../drizzle/meta/_journal.json', import.meta.url), 'utf8')).entries.map(({ tag }) => tag).sort();
+  assert.deepEqual(env.DB.database.prepare('SELECT tag FROM _local_migrations ORDER BY tag').all().map(({ tag }) => tag), expectedMigrations);
   env.close(); env = await createLocalStorage({ directory });
   assert.deepEqual(await getOverview(env, owner, {}, today), before);
   assert.deepEqual(await getLedgerHistory(env, owner, ledger.id), beforeHistory);

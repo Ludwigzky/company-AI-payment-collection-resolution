@@ -1,6 +1,7 @@
 import { generatePlan } from './engine.js';
 import { SOURCES } from './sources.js';
 import { initOverview, refreshOverview, overviewReportText } from './overview.js';
+import { initProvider } from './provider.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -774,4 +775,5 @@ $$('[data-case-tab]').forEach((node) => node.addEventListener('click', () => { i
 $$('[data-report-tab]').forEach((node) => node.addEventListener('click', () => selectReportTab(node.dataset.reportTab)));
 tabKeyboard($$('[data-case-tab]'), (node) => { if (!navigating) selectCaseTab(node.dataset.caseTab); }); tabKeyboard($$('[data-report-tab]'), (node) => selectReportTab(node.dataset.reportTab));
 initOverview({ api, openRecord: async (id) => { await navigate(id); if (!$('#overview-view').hidden && !$('#workspace-error').hidden) throw new Error($('#workspace-error').textContent); } });
+initProvider({ api });
 fillForm(null); renderSources(); renderCurrent(); selectCaseTab(caseTab); checkHealth(); loadHistory({ initial: true });

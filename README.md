@@ -4,6 +4,7 @@
 
 ## 当前功能
 
+- 右上角 DeepSeek 状态与 API 配置：支持加密保存个人密钥、修改模型、检测已保存连接、停用与恢复默认，并展示检测时间和过期状态。
 - 顶栏“应收总览”集中管理各案件的付款节点：开票、财务确认应收和付款到期分别登记；账龄与逾期分开统计，缺失依据保留待确认。
 - 法律事项时间线分别保留发生、送达、录入、业务提醒与人工核定期限；更正追加留痕，不按欠款日期自动计算诉讼时效。
 - 服务器历史记录，支持搜索、进行中与已归档筛选；可新建空草稿或明确标注的虚构示例。
@@ -38,7 +39,7 @@ npm run dev
 
 打开终端打印的本机地址，默认 `http://127.0.0.1:4173/`。本机启动时应用已提交迁移，将案件写入 `.local-data/records.sqlite`、原始附件写入 `.local-data/files/`；重启保留，目录不提交Git。本机只监听127.0.0.1，使用固定的本地预览用户，不代替线上认证。
 
-本机模型读取进程变量 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`，不会自动加载 `.env`。托管端继续使用 Sites runtime Secret，密钥不进入浏览器、源码或构建产物。缺少模型配置仍可保存案件及文件，生成会明确回退规则。
+本机默认配置读取进程变量 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`，不会自动加载 `.env`。也可通过页面右上角“API 配置”保存当前账号的手动配置，保存后立即用于后续分析。托管端默认配置继续使用 Sites runtime Secret；手动密钥经账号绑定的 AES-256-GCM 加密后保存，状态接口不回传密钥。缺少配置或停用模型时仍可保存案件并生成规则方案。详见[连接与配置说明](docs/PROVIDER_SETTINGS.md)。
 
 ## 线上存储与隔离
 
@@ -56,7 +57,7 @@ npm run check
 npm run build
 ```
 
-`npm test` 先构建，再验证规则、模型、法律核对、材料、案件存储、总览与Worker。当前200项测试通过，覆盖独立财务口径、账龄与逾期、法律时间线及更正、版本历史、归档和账号边界，以及既有材料与生成链路。另完成30项内存DOM/API检查，未替代实际浏览器视觉验收。修改表结构时运行 `npm run db:generate`，提交SQL和Drizzle元数据；已应用迁移不可改写。
+`npm test` 先构建，再验证规则、模型、法律核对、材料、案件存储、总览、服务配置与Worker。当前227项通过、1项平台专属测试跳过；覆盖独立财务口径、法律时间线、账号隔离、密钥加密、配置版本与探测竞态、实际分析路由凭据选择及原有生成链路。另完成总览30项和服务配置10组内存DOM/API检查，未替代实际浏览器视觉验收。修改表结构时运行 `npm run db:generate`，提交SQL和Drizzle元数据；已应用迁移不可改写。
 
 本机浏览器已验证企业界面、案件创建和文件图片上传。线上已使用获授权的虚构案件完成TXT与PNG真实分析，图片中的设备问题、待签字和复验节点被分别列出；第二案件未带入第一案件的附件和方案。最终刷新留存与测试归档记录见项目上级验收文档。
 
@@ -70,6 +71,8 @@ npm run build
 | `src/ai.js`、`dist/engine.js`、`dist/sources.js` | 模型执行补充、固定规则和官方渠道目录 |
 | `src/legal-corpus.js`、`src/legal-review.js` | 完整法条及版本、案件检索和适用条件核对 |
 | `dist/overview.js`、`src/overview-store.js`、`src/overview-metrics.js` | 总览界面、节点与事件持久化、独立金额与日期统计 |
+| `dist/provider.js`、`src/provider-settings.js`、`src/provider-probe.js` | DeepSeek 配置入口、账号加密设置及连接检测 |
+| `src/local-provider-key.mjs` | 本机稳定加密主密钥及 Windows DPAPI 保护 |
 | `db/schema.js`、`drizzle/` | 数据模型与不可变迁移 |
 | `src/local-storage.mjs`、`server.mjs` | 本机SQLite及文件存储 |
 | `worker/index.js`、`scripts/build-worker.mjs` | 私有站点运行与构建 |

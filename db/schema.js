@@ -124,3 +124,20 @@ export const recoveryLegalEvents = sqliteTable('recovery_legal_events', {
   check('recovery_legal_events_data_json_check', sql`json_valid(${table.dataJson})`),
   check('recovery_legal_events_not_self_check', sql`${table.supersedesId} IS NULL OR ${table.supersedesId} != ${table.id}`),
 ]);
+
+export const recoveryProviderSettings = sqliteTable('recovery_provider_settings', {
+  ownerId: text('owner_id').primaryKey(),
+  revision: integer('revision').notNull().default(0),
+  mode: text('mode').notNull().default('default'),
+  ciphertext: text('ciphertext'),
+  iv: text('iv'),
+  model: text('model').notNull().default(''),
+  updatedAt: text('updated_at').notNull(),
+  probeJson: text('probe_json'),
+  probeFingerprint: text('probe_fingerprint'),
+}, (table) => [
+  check('recovery_provider_settings_revision_check', sql`${table.revision} >= 0`),
+  check('recovery_provider_settings_mode_check', sql`${table.mode} IN ('default', 'custom', 'disabled')`),
+  check('recovery_provider_settings_encryption_check', sql`(${table.mode} IN ('custom', 'disabled') AND ${table.ciphertext} IS NOT NULL AND ${table.iv} IS NOT NULL) OR (${table.mode} IN ('default', 'disabled') AND ${table.ciphertext} IS NULL AND ${table.iv} IS NULL)`),
+  check('recovery_provider_settings_probe_json_check', sql`${table.probeJson} IS NULL OR json_valid(${table.probeJson})`),
+]);

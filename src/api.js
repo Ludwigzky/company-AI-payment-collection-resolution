@@ -1,6 +1,7 @@
 import { generateAIPlan, getAIConfiguration, InputError } from './ai.js';
 import { handleWorkspaceAPI } from './workspace-api.js';
 import { handleOverviewAPI } from './overview-store.js';
+import { handleProviderAPI, resolveProviderEnvironment } from './provider-settings.js';
 
 const BODY_LIMIT = 32 * 1024;
 const HEADERS = {
@@ -47,14 +48,24 @@ export async function handleAPI(request, env = {}, options = {}) {
     return json({ error: '请从本站页面提交请求。' }, 403);
   }
   const route = url.pathname;
+  if (route === '/api/provider' || route.startsWith('/api/provider/')) return handleProviderAPI(request, env, options);
   if (route === '/api/overview' || route.startsWith('/api/overview/')) return handleOverviewAPI(request, env, options);
-  if (route === '/api/records' || route.startsWith('/api/records/')) return handleWorkspaceAPI(request, env, options);
   if (route === '/api/plan' && env.DB) return json({ error: '请在案件记录内生成方案，确保材料与结果归档。' }, 409);
+  const recordRoute = route === '/api/records' || route.startsWith('/api/records/');
+  let effectiveEnv = env;
+  if (route === '/api/health' || route === '/api/plan' || (recordRoute && request.method === 'POST' && route.endsWith('/analyze'))) {
+    try { effectiveEnv = await resolveProviderEnvironment(request, env, options); }
+    catch {
+      if (route === '/api/health') effectiveEnv = { ...env, DEEPSEEK_API_KEY: '' };
+      else return json({ error: '模型配置暂不可读取，请在 API 配置中重新保存密钥或恢复默认。' }, 503);
+    }
+  }
+  if (recordRoute) return handleWorkspaceAPI(request, effectiveEnv, options);
   if (route !== '/api/health' && route !== '/api/plan') return json({ error: '接口不存在。' }, 404);
   const method = route === '/api/health' ? 'GET' : 'POST';
   if (request.method !== method) return json({ error: '请求方法不支持。' }, 405, { Allow: method });
   if (route === '/api/health') {
-    const { configured, model } = getAIConfiguration(env);
+    const { configured, model } = getAIConfiguration(effectiveEnv);
     return json({ provider: 'DeepSeek', configured, model, ...('DB' in env || 'BUCKET' in env ? { storageConfigured: Boolean(env.DB?.prepare && env.BUCKET?.get) } : {}) });
   }
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
@@ -67,7 +78,7 @@ export async function handleAPI(request, env = {}, options = {}) {
       ? json({ error: '提交内容过大，请控制在32KB以内。' }, 413)
       : json({ error: '项目数据格式无效，请重新提交。' }, 400);
   }
-  try { return json({ plan: await generateAIPlan(input, env, options) }); }
+  try { return json({ plan: await generateAIPlan(input, effectiveEnv, options) }); }
   catch (error) {
     if (error instanceof InputError) return json({ error: error.message }, 400);
     return json({ error: '暂时无法生成方案，请稍后再试。' }, 500);
