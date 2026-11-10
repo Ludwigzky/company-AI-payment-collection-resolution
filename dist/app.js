@@ -5,6 +5,7 @@ import { initProvider } from './provider.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const AI_CONTENT_NOTICE = '本方案包含 AI 辅助生成内容，请核对案件事实、证据及法律依据后使用。';
 const form = $('#case-form');
 const trackNames = { repair: '维修与履约', business: '商务与财务', legal: '法务与争议解决', complaint: '投诉与主管渠道' };
 const cache = new Map();
@@ -580,6 +581,7 @@ function renderPlan() {
   renderPlanState();
   if (!run?.plan) return;
   const plan = run.plan;
+  $('#ai-content-notice').textContent = AI_CONTENT_NOTICE;
   renderOverview(plan, run); renderRunMaterials(run); renderLegalSummary(plan); renderAnalysis(plan); renderActions(plan); renderLegal(plan); renderEvidence(plan); renderLetter(plan); renderSnapshot(plan, run);
   const generation = plan.generation || {};
   $('#generation-footer').textContent = (legalReviewFor(plan) ? '法律适用核对与条文版本随本次方案保存，基于未核实的填报与材料清单；不等于律师审核、事实证明或责任认定。执行补充、材料识别及沟通草稿需人工复核。' : legacyLegalNotice + '。此处保留所选历史版本内容，方案研判、材料识别及沟通草稿需人工复核。') + (generation.provider || generation.model ? ' 生成服务：' + [generation.provider, generation.model].filter(Boolean).join(' / ') + '。' : '') + (generation.reason ? ' 生成说明：' + generation.reason : '');
@@ -733,7 +735,7 @@ function renderEvidence(plan) {
 function renderLetter(plan) {
   const panel = el('article', 'panel letter-panel'); const top = el('div', 'letter-top'); const copy = button('复制草稿'); const aiDraft = aiFor(plan)?.communicationDraft; const draft = el('pre', 'letter-text');
   top.append(el('h3', '', '回款与项目事项沟通函'), copy); panel.append(top, el('p', 'letter-help', '请补齐名称、联系人及回复日期，并核对事实、金额、日期与法律表述后使用。'));
-  const show = () => { draft.textContent = draftMode === 'supplement' && aiDraft ? aiDraft : plan.letterDraft || ''; };
+  const show = () => { draft.textContent = AI_CONTENT_NOTICE + '\n\n' + (draftMode === 'supplement' && aiDraft ? aiDraft : plan.letterDraft || ''); };
   if (aiDraft) { const choice = el('div', 'draft-choice'); const label = el('label', '', '草稿版本'); label.htmlFor = 'draft-choice'; const select = el('select'); select.id = 'draft-choice'; for (const [value, text] of [['supplement', '沟通草稿 · 需复核'], ['rules', '基础草稿']]) { const option = el('option', '', text); option.value = value; select.append(option); } select.value = draftMode; select.addEventListener('change', () => { draftMode = select.value; show(); }); choice.append(label, select); panel.append(choice); }
   copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(draft.textContent); toast('草稿已复制，请核对后使用'); } catch { toast('浏览器未允许复制，请选中文本复制'); } });
   show(); panel.append(draft); $('#report-letter').replaceChildren(panel);
@@ -784,7 +786,7 @@ async function beginAnalysis() {
 }
 function reportText() {
   const run = currentRun(); if (!run) return '';
-  const plan = run.plan; const ai = aiFor(plan); const review = legalReviewFor(plan); const lines = ['企业 AI 回款方案工作台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + runOrdinal(active, run) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
+  const plan = run.plan; const ai = aiFor(plan); const review = legalReviewFor(plan); const lines = ['企业 AI 回款方案工作台 · 回款方案（需人工复核）', AI_CONTENT_NOTICE, '', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + runOrdinal(active, run) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
   const materials = runMaterials(run);
   lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
   for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
