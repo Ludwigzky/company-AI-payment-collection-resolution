@@ -197,6 +197,7 @@ function renderControls() {
   $('#add-note').disabled = busy || archived || conflicted;
   $('#new-record').disabled = navigating; $('#create-sample').disabled = navigating;
   $('#reload-record').disabled = navigating || pendingWrites > 0;
+  $$('[data-case-tab]').forEach((node) => { node.disabled = navigating; });
   $$('.history-item').forEach((node) => { node.disabled = navigating; });
   $$('.remove-file').forEach((node) => { node.disabled = busy || archived || conflicted; });
   form.inert = navigating || archived;
@@ -402,8 +403,9 @@ function renderPlanState() {
   notice.textContent = pending ? '正在生成本案件方案。可切换案件，完成后结果将自动归入原记录。' : failure || '';
   const selectionChanged = run && JSON.stringify([...selectedIds()].sort()) !== JSON.stringify([...(run.attachmentIds || [])].sort());
   const stale = Boolean(run && (dirty || Number(run.revision) !== Number(active.revision)));
-  $('#stale-notice').hidden = !stale && !selectionChanged;
-  $('#stale-notice').textContent = stale ? '资料已更新，需重新生成。下方展示的是所选版本当时的案情与材料。' : '本次材料选择与该版本不同。下方仍为历史版本，重新生成后才会使用当前勾选材料。';
+  const archived = Boolean(run && active.status === 'archived');
+  $('#stale-notice').hidden = !archived && !stale && !selectionChanged;
+  $('#stale-notice').textContent = archived ? '案件已归档，下方为所选版本历史快照。' : stale ? '资料已更新，需重新生成。下方展示的是所选版本当时的案情与材料。' : '本次材料选择与该版本不同。下方仍为历史版本，重新生成后才会使用当前勾选材料。';
   renderControls();
 }
 function renderPlan() {
@@ -526,7 +528,7 @@ async function beginAnalysis() {
         const updated = acceptRecord(received);
         if (payload.run) selectedRuns.set(recordId, payload.run.id);
         running.delete(recordId);
-        if (active?.id === recordId) { renderCurrent(); if (payload.stale) toast('方案已保存。生成期间资料发生变更，请重新生成以更新。'); else toast('回款方案已保存至当前案件，请复核后使用'); }
+        if (active?.id === recordId) { renderCurrent(); if (updated.status === 'archived') toast(record.number + ' 的回款方案已保存，案件已归档'); else if (payload.stale) toast(record.number + ' 的方案已保存。生成期间资料发生变更，请重新生成以更新。'); else toast(record.number + ' 的回款方案已保存，请复核后使用'); }
         else toast(updated.number + ' 的回款方案已生成并归档');
         renderHistory();
       }).catch((error) => {
@@ -539,7 +541,7 @@ async function beginAnalysis() {
 }
 function reportText() {
   const run = currentRun(); if (!run) return '';
-  const plan = run.plan; const ai = aiFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
+  const plan = run.plan; const ai = aiFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (active.status === 'archived' ? '案件已归档，下文为所选版本历史快照' : dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
   const materials = runMaterials(run);
   lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
   for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
@@ -613,7 +615,7 @@ $('#refresh-history').addEventListener('click', () => loadHistory());
 $$('[data-status]').forEach((node) => node.addEventListener('click', () => { filterStatus = node.dataset.status; $$('[data-status]').forEach((item) => { item.classList.toggle('active', item === node); item.setAttribute('aria-pressed', String(item === node)); }); loadHistory(); }));
 $$('[data-view]').forEach((node) => node.addEventListener('click', () => showView(node.dataset.view)));
 $('.brand').addEventListener('click', (event) => { event.preventDefault(); showView('workspace'); });
-$$('[data-case-tab]').forEach((node) => node.addEventListener('click', () => selectCaseTab(node.dataset.caseTab)));
+$$('[data-case-tab]').forEach((node) => node.addEventListener('click', () => { if (!navigating) selectCaseTab(node.dataset.caseTab); }));
 $$('[data-report-tab]').forEach((node) => node.addEventListener('click', () => selectReportTab(node.dataset.reportTab)));
-tabKeyboard($$('[data-case-tab]'), (node) => selectCaseTab(node.dataset.caseTab)); tabKeyboard($$('[data-report-tab]'), (node) => selectReportTab(node.dataset.reportTab));
+tabKeyboard($$('[data-case-tab]'), (node) => { if (!navigating) selectCaseTab(node.dataset.caseTab); }); tabKeyboard($$('[data-report-tab]'), (node) => selectReportTab(node.dataset.reportTab));
 fillForm(null); renderSources(); renderCurrent(); selectCaseTab(caseTab); checkHealth(); loadHistory({ initial: true });
