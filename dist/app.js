@@ -1,482 +1,619 @@
 import { generatePlan } from './engine.js';
 import { SOURCES } from './sources.js';
 
-const paths = {
-  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
-  book: '<path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Z"/><path d="M12 5v15"/>',
-  compass: '<circle cx="12" cy="12" r="9"/><path d="m16 8-2.5 5.5L8 16l2.5-5.5L16 8Z"/>',
-  tool: '<path d="M14 5a5 5 0 0 0-6 6l-5 5a2.8 2.8 0 0 0 4 4l5-5a5 5 0 0 0 6-6l-3 3-3-3 3-3Z"/>',
-  briefcase: '<rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V4h8v3M3 12l9 3 9-3M12 12v5"/>',
-  building: '<path d="M4 21V7h8v14M12 3h8v18M2 21h20M7 10h2M7 14h2M7 18h2M15 7h2M15 11h2M15 15h2"/>',
-  rotate: '<path d="M3 10a9 9 0 1 1 1 7M3 4v6h6"/>',
-  chevron: '<path d="m6 9 6 6 6-6"/>',
-  spark: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4M18 4h4"/>',
-  arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
-  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
-  download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
-  printer: '<path d="M7 8V3h10v5M7 17H3v-9h18v9h-4M7 14h10v7H7zM17 11h1"/>',
-  check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
-  circle: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3h.01"/>',
-  scales: '<path d="M12 3v18M5 21h14M4 7h16M5 7l-3 7h6L5 7Zm14 0-3 7h6l-3-7Z"/>',
-  message: '<path d="M21 11a9 9 0 0 1-9 9 10 10 0 0 1-4-1l-5 2 1-5a9 9 0 1 1 17-5Z"/><path d="M8 10h8M8 14h5"/>',
-  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-  external: '<path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/>',
-  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
-};
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
+const form = $('#case-form');
+const sourceMap = new Map(SOURCES.map((source) => [source.id, source]));
+const trackNames = { repair: '维修与履约', business: '商务与财务', legal: '法务与争议解决', complaint: '投诉与主管渠道' };
+const cache = new Map();
+const selections = new Map();
+const selectedRuns = new Map();
+const noteDrafts = new Map();
+const running = new Map();
+const runErrors = new Map();
+let active = null;
+let summaries = [];
+let dirty = false;
+let editVersion = 0;
+let draftKey = 0;
+let caseTab = 'info';
+let reportTab = 'actions';
+let filterStatus = 'all';
+let writeQueue = Promise.resolve();
+let pendingWrites = 0;
+let navigating = false;
+let conflicted = false;
+let listSequence = 0;
+let readSequence = 0;
+let listController;
+let readController;
+let searchTimer;
+let toastTimer;
+let service = {};
+let draftMode = 'supplement';
 
-function icon(name) {
-  const span = document.createElement('span');
-  // Only fixed SVG paths are inserted as markup; case input is always textContent.
-  span.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (paths[name] || paths.circle) + '</svg>';
-  return span;
-}
-function element(tag, className, text) {
+function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = String(text);
+  if (text !== undefined && text !== null) node.textContent = String(text);
   return node;
 }
-document.querySelectorAll('[data-icon]').forEach((node) => node.replaceChildren(icon(node.dataset.icon)));
-const form = document.querySelector('#case-form');
-const sourceMap = new Map(SOURCES.map((source) => [source.id, source]));
-const tracks = { repair: { label: '维修与履约', icon: 'tool' }, business: { label: '商务与财务', icon: 'briefcase' }, legal: { label: '法务与争议解决', icon: 'scales' }, complaint: { label: '投诉与主管渠道', icon: 'message' } };
-let currentPlan;
-let isSample = true;
-let toastTimer;
-let requestVersion = 0;
-let activeRequest;
-let draftMode = 'rules';
-let serviceState = { configured: false, model: '', checked: false };
-
-function setLoading(loading) {
-  document.querySelector('#generate-button').disabled = loading;
-  document.querySelector('#generate-label').textContent = loading ? 'DeepSeek 正在生成…' : '使用 AI 生成';
-  form.setAttribute('aria-busy', String(loading));
-  document.querySelector('#result-area').setAttribute('aria-busy', String(loading));
+function list(items, ordered = false) {
+  const node = el(ordered ? 'ol' : 'ul');
+  (items || []).forEach((item) => node.append(el('li', '', item)));
+  return node;
 }
-function cancelPending() {
-  requestVersion += 1;
-  if (!activeRequest) return;
-  clearTimeout(activeRequest.timer);
-  activeRequest.controller.abort();
-  activeRequest = undefined;
-  setLoading(false);
-  if (currentPlan) renderGenerationNotice(currentPlan);
+function button(label, className = 'button secondary small') {
+  const node = el('button', className, label); node.type = 'button'; return node;
 }
-function rulesPlan(plan, reason) {
-  return { ...plan, generation: { mode: 'rules', provider: 'DeepSeek', model: serviceState.model, reason } };
+function money(value) {
+  return value === '' || value === null || value === undefined ? '金额待填写' : '¥ ' + Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function aiText(value) { return typeof value === 'string' ? value.trim() : ''; }
-function aiStrings(value) { return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : []; }
-function aiFor(plan) { return plan.generation?.mode === 'ai' ? plan.ai : undefined; }
-function normalizeResponse(received, basePlan) {
-  if (!received || !received.generation || !['ai', 'rules'].includes(received.generation.mode)) throw new Error('invalid-response');
-  const generation = { mode: received.generation.mode, provider: 'DeepSeek', model: aiText(received.generation.model), reason: aiText(received.generation.reason) };
-  // Keep every amount, date, action condition and link in the deterministic plan.
-  // Model output is an independent text supplement, never replacement HTML or URLs.
-  if (generation.mode === 'rules') return { ...basePlan, generation: { ...generation, reason: generation.reason || '本次未生成 AI 建议，已使用本机规则结果。' } };
-  if (!received.ai || typeof received.ai !== 'object' || Array.isArray(received.ai)) throw new Error('invalid-response');
-  const allowedSources = new Map(basePlan.actions.map((action) => [action.track, new Set(action.sourceIds)]));
-  const ai = {
-    analysis: aiText(received.ai.analysis),
-    strategy: aiText(received.ai.strategy),
-    recommendations: (Array.isArray(received.ai.recommendations) ? received.ai.recommendations : [])
-      .filter((item) => item && allowedSources.has(item.track))
-      .map((item) => ({ track: item.track, advice: aiText(item.advice), steps: aiStrings(item.steps), sourceIds: aiStrings(item.sourceIds).filter((id) => allowedSources.get(item.track).has(id) && sourceMap.has(id)) }))
-      .filter((item) => item.advice || item.steps.length),
-    followUpQuestions: aiStrings(received.ai.followUpQuestions),
-    communicationDraft: aiText(received.ai.communicationDraft),
-  };
-  if (!ai.analysis && !ai.strategy && !ai.recommendations.length && !ai.communicationDraft) throw new Error('invalid-response');
-  return { ...basePlan, generation, ai };
+function dateTime(value, short = false) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', ...(short ? {} : { year: 'numeric' }), hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 }
-function renderGenerationNotice(plan) {
-  const ai = aiFor(plan);
-  const node = document.querySelector('#generation-notice');
-  node.classList.toggle('ai-ready', Boolean(ai));
-  node.textContent = ai
-    ? 'DeepSeek AI 已生成补充分析' + (plan.generation.model ? ' · ' + plan.generation.model : '') + '。固定规则与来源仍为基础，AI 内容和草稿需人工复核；未进行实时法律检索。'
-    : plan.generation.reason;
-}
-
-function chinaToday() {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
-  const value = (type) => parts.find((part) => part.type === type).value;
-  return `${value('year')}-${value('month')}-${value('day')}`;
-}
-function shiftedDate(days) {
-  const date = new Date(chinaToday() + 'T00:00:00Z');
+function chinaDateOffset(days = 0) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map(({ type, value }) => [type, value]));
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+function bytes(size) {
+  if (!size) return '0 B';
+  return size >= 1048576 ? (size / 1048576).toFixed(2) + ' MB' : Math.ceil(size / 1024) + ' KB';
+}
+function toast(message) {
+  $('#toast').textContent = message; $('#toast').hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4300);
+}
+function clearError() { $('#workspace-error').hidden = true; $('#form-error').hidden = true; }
+function showError(error, recordId = active?.id) {
+  const message = error?.message || '操作未完成，请稍后重试。';
+  if (recordId && active?.id !== recordId) { toast(message); return; }
+  $('#workspace-error').textContent = message; $('#workspace-error').hidden = false;
+  if (error?.status === 409) { conflicted = true; $('#conflict-notice').hidden = false; }
+  renderHeader();
+}
+async function api(path, options = {}) {
+  const headers = { ...options.headers };
+  if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+  const response = await fetch(path, { ...options, credentials: 'same-origin', headers, body: options.body instanceof FormData ? options.body : options.body ? JSON.stringify(options.body) : undefined });
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error('服务器返回内容无法读取，请重试。'); }
+  if (!response.ok) {
+    const error = new Error(payload?.error || '操作未完成，请稍后重试。'); error.status = response.status; throw error;
+  }
+  return payload;
+}
+function queueWrite(task) {
+  pendingWrites += 1; renderControls();
+  const result = writeQueue.then(task);
+  writeQueue = result.catch(() => {});
+  return result.finally(() => { pendingWrites -= 1; renderControls(); });
 }
 function getInput() {
   const data = new FormData(form);
   const input = Object.fromEntries(data.entries());
-  input.amount = Number(data.get('amount'));
-  input.issueTypes = data.getAll('issueTypes');
-  input.evidence = data.getAll('evidence');
+  delete input.title;
+  input.amount = data.get('amount') === '' ? '' : Number(data.get('amount'));
+  input.issueTypes = data.getAll('issueTypes'); input.evidence = data.getAll('evidence');
   return input;
 }
-function toast(message) {
-  const node = document.querySelector('#toast');
-  node.textContent = message;
-  node.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { node.hidden = true; }, 3500);
+function fillForm(record) {
+  form.reset();
+  const input = record?.input || {};
+  for (const control of form.elements) {
+    if (!control.name || control.name === 'title') continue;
+    if (control.type === 'checkbox') control.checked = Array.isArray(input[control.name]) && input[control.name].includes(control.value);
+    else if (Object.hasOwn(input, control.name)) control.value = input[control.name] ?? '';
+  }
+  form.elements.title.value = record?.title || '';
 }
+function mergedItems(previous = [], received = []) {
+  return [...new Map([...previous, ...received].map((item) => [item.id, item])).values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+function acceptRecord(record) {
+  if (!record?.id) throw new Error('记录响应不完整，请重新载入。');
+  const previous = cache.get(record.id);
+  // Late analysis responses must never replace more recent input or attachments.
+  const previousIsNewer = previous && (previous.revision > record.revision || (previous.revision === record.revision && String(previous.updatedAt) > String(record.updatedAt)));
+  const merged = previousIsNewer ? { ...previous } : { ...record };
+  merged.runs = mergedItems(previous?.runs, record.runs);
+  merged.notes = mergedItems(previous?.notes, record.notes);
+  merged.attachments ||= [];
+  cache.set(record.id, merged);
+  if (!selections.has(record.id)) selections.set(record.id, new Set(merged.attachments.map((item) => item.id)));
+  const summary = { id: merged.id, number: merged.number, title: merged.title, status: merged.status, revision: merged.revision, debtorName: merged.input?.debtorName, amount: merged.input?.amount, dueDate: merged.input?.dueDate, attachmentCount: merged.attachments.length, runCount: merged.runs.length, updatedAt: merged.updatedAt };
+  summaries = [summary, ...summaries.filter((item) => item.id !== record.id)].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  if (active?.id === merged.id) active = merged;
+  renderHistory();
+  return merged;
+}
+async function saveDraftNow({ force = false } = {}) {
+  if (conflicted) { const error = new Error('记录版本已冲突。请先保留填写内容，再重新载入服务器版本。'); error.status = 409; throw error; }
+  if (active && !dirty) return active;
+  if (!active && !dirty && !force) return null;
+  // The queue serializes revision-dependent writes. Editing can continue while saving.
+  do {
+    const version = editVersion;
+    const context = draftKey;
+    const priorId = active?.id;
+    const title = form.elements.title.value.trim() || '未命名回款案件';
+    const input = getInput();
+    $('#save-state').textContent = '正在保存至服务器…';
+    const payload = priorId
+      ? await api('/api/records/' + encodeURIComponent(priorId), { method: 'PATCH', body: { revision: active.revision, title, input } })
+      : await api('/api/records', { method: 'POST', body: { title, input } });
+    if (context !== draftKey || (priorId && active?.id !== priorId)) throw new Error('当前记录已切换，请重新载入后核对。');
+    const saved = acceptRecord(payload.record);
+    if (!priorId) {
+      active = saved;
+      if (noteDrafts.has('draft')) { noteDrafts.set(saved.id, noteDrafts.get('draft')); noteDrafts.delete('draft'); }
+    }
+    dirty = version !== editVersion;
+    if (!dirty && !form.elements.title.value.trim()) form.elements.title.value = saved.title;
+    renderCurrent();
+  } while (dirty);
+  return active;
+}
+function saveDraft(options) { return queueWrite(() => saveDraftNow(options)); }
 function showView(view) {
-  document.querySelectorAll('.view').forEach((node) => { node.hidden = node.id !== view + '-view'; });
-  document.querySelectorAll('[data-view]').forEach((node) => {
-    node.classList.toggle('active', node.dataset.view === view);
-    if (node.dataset.view === view) node.setAttribute('aria-current', 'page');
-    else node.removeAttribute('aria-current');
-  });
-  document.querySelector('#page-title').textContent = { workspace: '方案工作台', sources: '法律与官方渠道', guide: '使用指南' }[view];
-  document.querySelector('#mobile-nav').value = view;
-  window.scrollTo({ top: 0, behavior: 'instant' });
+  $$('.view').forEach((node) => { node.hidden = node.id !== view + '-view'; });
+  $$('[data-view]').forEach((node) => { node.classList.toggle('active', node.dataset.view === view); if (node.dataset.view === view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current'); });
 }
-document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
-document.querySelector('#mobile-nav').addEventListener('change', (event) => showView(event.target.value));
-document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); showView('workspace'); });
-document.querySelector('#guide-start').addEventListener('click', () => showView('workspace'));
-
-function selectTab(tab) {
-  document.querySelectorAll('.report-tab').forEach((button) => {
-    const active = button.dataset.tab === tab;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-selected', String(active));
-    button.tabIndex = active ? 0 : -1;
-  });
-  document.querySelectorAll('.report-content').forEach((node) => { node.hidden = node.id !== 'report-' + tab; });
+function selectCaseTab(tab) {
+  caseTab = tab;
+  $$('[data-case-tab]').forEach((node) => { const selected = node.dataset.caseTab === tab; node.classList.toggle('active', selected); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1; });
+  $('#details-layout').hidden = !['info', 'materials'].includes(tab);
+  $('#details-layout').classList.toggle('materials-only', tab === 'materials');
+  $('#form-panel').hidden = tab === 'materials';
+  $('#plan-section').hidden = tab !== 'plan'; $('#notes-section').hidden = tab !== 'notes';
 }
-document.querySelectorAll('.report-tab').forEach((button) => {
-  button.addEventListener('click', () => selectTab(button.dataset.tab));
-  button.addEventListener('keydown', (event) => {
-    const tabs = [...document.querySelectorAll('.report-tab')];
-    const index = tabs.indexOf(button);
-    const target = event.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length] : event.key === 'ArrowLeft' ? tabs[(index + tabs.length - 1) % tabs.length] : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : undefined;
-    if (target) { event.preventDefault(); selectTab(target.dataset.tab); target.focus(); }
-  });
-});
-
+function selectReportTab(tab) {
+  reportTab = tab;
+  $$('[data-report-tab]').forEach((node) => { const selected = node.dataset.reportTab === tab; node.classList.toggle('active', selected); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1; });
+  $$('.report-content').forEach((node) => { node.hidden = node.id !== 'report-' + tab; });
+}
+function tabKeyboard(nodes, onSelect) {
+  nodes.forEach((node, index) => node.addEventListener('keydown', (event) => {
+    const target = event.key === 'ArrowRight' ? nodes[(index + 1) % nodes.length] : event.key === 'ArrowLeft' ? nodes[(index + nodes.length - 1) % nodes.length] : event.key === 'Home' ? nodes[0] : event.key === 'End' ? nodes.at(-1) : null;
+    if (target) { event.preventDefault(); onSelect(target); target.focus(); }
+  }));
+}
+function renderControls() {
+  const archived = active?.status === 'archived';
+  const busy = pendingWrites > 0 || navigating;
+  $('#save-button').disabled = busy || archived || conflicted;
+  $('#save-button').textContent = pendingWrites ? '保存中…' : '保存';
+  $('#generate-button').disabled = busy || archived || conflicted || running.has(active?.id);
+  $('#generate-button').textContent = running.has(active?.id) ? '方案生成中…' : '生成回款方案';
+  $('#archive-button').disabled = !active || busy || conflicted;
+  $('#archive-button').textContent = archived ? '恢复案件' : '归档';
+  $('#choose-files').disabled = busy || archived || conflicted; $('#choose-images').disabled = busy || archived || conflicted;
+  $('#add-note').disabled = busy || archived || conflicted;
+  $('#new-record').disabled = navigating; $('#create-sample').disabled = navigating;
+  $('#reload-record').disabled = navigating || pendingWrites > 0;
+  $$('.history-item').forEach((node) => { node.disabled = navigating; });
+  $$('.remove-file').forEach((node) => { node.disabled = busy || archived || conflicted; });
+  form.inert = navigating || archived;
+}
+function renderHeader() {
+  $('#case-number').textContent = active ? active.number + ' · 资料版本 ' + active.revision : '新建记录 · 尚未保存';
+  $('#case-title').textContent = form.elements.title.value.trim() || active?.title || '未命名回款案件';
+  const status = active?.status === 'archived' ? '已归档' : active ? '进行中' : '草稿';
+  $('#case-status').textContent = status; $('#case-status').className = 'status-tag' + (active?.status === 'archived' ? ' archived' : active ? '' : ' draft');
+  $('#save-state').classList.toggle('unsaved', dirty);
+  $('#save-state').textContent = conflicted ? '版本冲突 · 当前填写内容已保留' : dirty ? '有未保存修改 · 切换案件前自动保存' : active ? '已保存 · 最近更新 ' + dateTime(active.updatedAt) : '填写后保存，资料与方案将归档至本记录';
+  $('#attachment-count').textContent = active?.attachments?.length || 0; $('#run-count').textContent = active?.runs?.length || 0; $('#note-count').textContent = active?.notes?.length || 0;
+  renderControls();
+}
+function renderHistory() {
+  const query = $('#history-search').value.trim().toLowerCase();
+  const visible = summaries.filter((item) => (filterStatus === 'all' || item.status === filterStatus) && (!query || [item.title, item.debtorName, item.number].join(' ').toLowerCase().includes(query)));
+  $('#history-count').textContent = '共 ' + visible.length + ' 条记录';
+  const container = $('#history-list'); container.replaceChildren();
+  if (!visible.length) {
+    const empty = el('div', 'history-empty'); empty.append(el('strong', '', query || filterStatus !== 'all' ? '没有符合条件的记录' : '暂无案件记录'), el('p', '', '点击“新建记录”开始填写')); container.append(empty); return;
+  }
+  for (const item of visible) {
+    const node = button('', 'history-item' + (active?.id === item.id ? ' active' : ''));
+    node.dataset.recordId = item.id;
+    if (active?.id === item.id) node.setAttribute('aria-current', 'true');
+    const top = el('div', 'history-item-top');
+    top.append(el('strong', '', item.title || '未命名回款案件'));
+    if (item.status === 'archived') top.append(el('span', 'status-tag archived', '已归档'));
+    else if (running.has(item.id)) top.append(el('span', 'status-tag', '生成中'));
+    const bottom = el('div', 'history-item-bottom'); bottom.append(el('span', 'history-amount', money(item.amount)), el('span', '', dateTime(item.updatedAt, true)));
+    node.append(top, el('div', 'history-item-customer', item.debtorName || '客户名称待填写'), bottom);
+    node.addEventListener('click', () => navigate(item.id)); container.append(node);
+  }
+  renderControls();
+}
+async function loadHistory({ initial = false } = {}) {
+  const sequence = ++listSequence;
+  listController?.abort(); listController = new AbortController();
+  $('#history-count').textContent = '正在读取记录…';
+  try {
+    const query = new URLSearchParams({ q: $('#history-search').value.trim(), status: filterStatus });
+    const payload = await api('/api/records?' + query, { signal: listController.signal });
+    if (sequence !== listSequence) return;
+    summaries = (Array.isArray(payload.records) ? payload.records : []).map((summary) => {
+      const known = cache.get(summary.id);
+      if (!known || (known.revision <= summary.revision && String(known.updatedAt) <= String(summary.updatedAt))) return summary;
+      return { ...summary, title: known.title, status: known.status, revision: known.revision, debtorName: known.input?.debtorName, amount: known.input?.amount, dueDate: known.input?.dueDate, attachmentCount: known.attachments.length, runCount: known.runs.length, updatedAt: known.updatedAt };
+    }); renderHistory();
+    if (initial && summaries.length && !active && !dirty && !navigating) await navigate(summaries[0].id);
+  } catch (error) {
+    if (error.name === 'AbortError' || sequence !== listSequence) return;
+    $('#history-count').textContent = '读取失败';
+    if (!summaries.length) { const node = el('div', 'history-empty'); node.append(el('strong', '', '无法读取案件记录'), el('p', '', error.message)); $('#history-list').replaceChildren(node); }
+    toast('案件列表读取失败：' + error.message);
+  }
+}
+async function navigate(id = null, sample = false, reload = false) {
+  if (navigating || (id && id === active?.id && !reload)) { showView('workspace'); return; }
+  navigating = true; renderControls();
+  const previousId = active?.id;
+  noteDrafts.set(previousId || 'draft', $('#note-body').value);
+  try {
+    if (!reload) await saveDraft();
+    else await writeQueue;
+    let next = null;
+    if (id) {
+      const sequence = ++readSequence; readController?.abort(); readController = new AbortController();
+      const payload = await api('/api/records/' + encodeURIComponent(id), { signal: readController.signal });
+      if (sequence !== readSequence) return;
+      // Explicit reload takes the server version, including its complete attachments.
+      if (reload) cache.delete(id);
+      next = acceptRecord(payload.record);
+    }
+    active = next; draftKey += 1; dirty = false; editVersion += 1; conflicted = false;
+    $('#conflict-notice').hidden = true; clearError(); fillForm(next);
+    $('#note-body').value = noteDrafts.get(next?.id || 'draft') || '';
+    if (!next) { $('#note-body').value = ''; noteDrafts.delete('draft'); }
+    if (sample) {
+      fillForm({ title: '示例：华东设备项目尾款', input: { amount: 328000, dueDate: chinaDateOffset(-90), companyName: '示例设备公司', debtorName: '示例采购公司', issueText: '【虚构示例】设备已交付，客户反馈运行不稳定，以维修和验收未完成为由暂缓支付尾款。尚未确认故障原因及费用承担，拟先推动售后核查，同时对账并争取无争议部分付款。', projectType: 'equipment', issueTypes: ['repair', 'acceptance'], evidence: ['contract', 'delivery', 'invoice'], acceptanceStatus: 'disputed', debtorType: 'enterprise', creditorSize: 'unknown', disputeClause: 'unknown', disputeAccepted: 'unknown' } });
+      dirty = true; await saveDraft({ force: true }); toast('已新建虚构示例记录，可继续上传资料');
+    }
+    showView('workspace'); selectCaseTab('info'); renderCurrent(); renderHistory();
+  } catch (error) { if (error.name !== 'AbortError') showError(error, active?.id); }
+  finally { navigating = false; renderControls(); if (!active && !sample) form.elements.title.focus(); }
+}
+function attachmentUrl(recordId, attachmentId) { return '/api/records/' + encodeURIComponent(recordId) + '/attachments/' + encodeURIComponent(attachmentId) + '/content'; }
+function selectedIds(record = active) {
+  if (!record) return [];
+  const selected = selections.get(record.id) || new Set();
+  return record.attachments.filter((item) => selected.has(item.id)).map((item) => item.id);
+}
+function renderAttachments() {
+  const attachments = active?.attachments || [];
+  const total = attachments.reduce((sum, item) => sum + Number(item.size || 0), 0);
+  $('#materials-size').textContent = attachments.length + ' / 8 个文件 · ' + bytes(total);
+  const target = $('#attachment-list'); target.replaceChildren();
+  if (!attachments.length) { const row = el('tr'); const cell = el('td', 'attachment-empty', '暂无资料。上传后将保存在当前案件记录中。'); cell.colSpan = 3; row.append(cell); target.append(row); }
+  const recordId = active?.id;
+  for (const attachment of attachments) {
+    const row = el('tr'); const choice = el('td', 'select-col'); const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = selections.get(recordId)?.has(attachment.id); checkbox.setAttribute('aria-label', '将 ' + attachment.name + ' 纳入本次分析');
+    checkbox.addEventListener('change', () => {
+      const set = selections.get(recordId); if (!set) return;
+      if (checkbox.checked) set.add(attachment.id); else set.delete(attachment.id);
+      if (active?.id === recordId) { renderSelectedMaterials(); renderPlanState(); }
+    }); choice.append(checkbox);
+    const info = el('td'); info.append(el('span', 'file-name', attachment.name), el('div', 'file-meta', bytes(attachment.size) + ' · ' + dateTime(attachment.createdAt)));
+    const actions = el('td'); const actionsInner = el('div', 'file-actions');
+    const preview = button('预览', ''); preview.addEventListener('click', () => previewAttachment(recordId, attachment));
+    const download = el('a', '', '下载'); download.href = attachmentUrl(recordId, attachment.id); download.download = attachment.name;
+    const remove = button('移除', 'remove-file'); remove.addEventListener('click', () => removeAttachment(recordId, attachment));
+    actionsInner.append(preview, download, remove); actions.append(actionsInner); row.append(choice, info, actions); target.append(row);
+  }
+  renderSelectedMaterials();
+}
+function renderSelectedMaterials() {
+  const attachments = active?.attachments || [];
+  const ids = new Set(selectedIds()); const selected = attachments.filter((item) => ids.has(item.id));
+  $('#selected-materials').textContent = attachments.length ? '本次选中 ' + selected.length + ' / ' + attachments.length + ' 个材料（' + bytes(selected.reduce((sum, item) => sum + item.size, 0)) + '）' + (selected.length < attachments.length ? '；未选中材料不会发送给分析服务。' : '，均纳入下次分析。') : '尚未上传材料；也可仅按填报信息生成方案。';
+}
+async function uploadFiles(files) {
+  const batch = [...files]; if (!batch.length || navigating) return;
+  if (active?.status === 'archived') { toast('请先恢复案件再上传资料'); return; }
+  const extensions = /\.(pdf|docx|xlsx|txt|csv|md|json|png|jpe?g|gif|webp)$/i;
+  const invalid = batch.find((file) => !extensions.test(file.name) || file.size > 5 * 1048576 || !file.size);
+  if (invalid) { showError(new Error('“' + invalid.name + '”格式不支持、内容为空或超过单文件 5 MB 限额。')); return; }
+  const origin = active?.id;
+  try {
+    await queueWrite(async () => {
+      const record = await saveDraftNow({ force: true });
+      const recordId = record.id;
+      if (origin && origin !== recordId) throw new Error('请在原案件中重新选择上传。');
+      if (record.attachments.length + batch.length > 8 || record.attachments.reduce((sum, item) => sum + item.size, 0) + batch.reduce((sum, item) => sum + item.size, 0) > 16 * 1048576) throw new Error('每个案件最多 8 个文件，资料总量不超过 16 MB。');
+      let uploaded = 0;
+      try {
+        for (const file of batch) {
+          const body = new FormData(); body.append('file', file);
+          const payload = await api('/api/records/' + encodeURIComponent(recordId) + '/attachments', { method: 'POST', body });
+          acceptRecord(payload.record); selections.get(recordId)?.add(payload.attachment.id); uploaded += 1;
+          // Only the captured record may receive this upload in the visible workspace.
+          if (active?.id === recordId) renderCurrent();
+        }
+      } catch (error) { if (uploaded) error.message = '已上传 ' + uploaded + ' 个文件，其余未完成：' + error.message; throw error; }
+      toast('已上传 ' + uploaded + ' 个材料，归入 ' + record.number);
+    });
+  } catch (error) { showError(error, origin || active?.id); }
+}
+async function removeAttachment(recordId, attachment) {
+  try {
+    await queueWrite(async () => {
+      if (active?.id !== recordId) return;
+      await saveDraftNow();
+      const payload = await api('/api/records/' + encodeURIComponent(recordId) + '/attachments/' + encodeURIComponent(attachment.id), { method: 'DELETE' });
+      acceptRecord(payload.record); selections.get(recordId)?.delete(attachment.id);
+      if (active?.id === recordId) renderCurrent();
+      toast('已从当前资料中移除，历史方案仍保留当时的材料记录');
+    });
+  } catch (error) { showError(error, recordId); }
+}
+function previewAttachment(recordId, attachment) {
+  $('#preview-title').textContent = attachment.name; const content = $('#preview-content'); content.replaceChildren();
+  if (/^image\/(png|jpeg|gif|webp)$/.test(attachment.mime)) {
+    const image = el('img'); image.src = attachmentUrl(recordId, attachment.id); image.alt = attachment.name;
+    image.addEventListener('error', () => { content.replaceChildren(el('p', '', '图片无法预览，请下载原文件核对。')); }); content.append(image);
+  } else {
+    content.append(el('p', '', attachment.mime === 'application/pdf' ? '请下载 PDF 后使用本机阅读器查看，核对原始资料及页码。' : '此类文件请下载后使用对应应用查看。'));
+    const link = el('a', 'button secondary', '下载原文件'); link.href = attachmentUrl(recordId, attachment.id); link.download = attachment.name; content.append(link);
+  }
+  $('#preview-dialog').showModal();
+}
+function currentRun() {
+  if (!active?.runs?.length) return null;
+  return active.runs.find((run) => run.id === selectedRuns.get(active.id)) || active.runs[0];
+}
+function aiFor(plan) { return plan?.generation?.mode === 'ai' ? plan.ai : null; }
+function runMaterials(run) {
+  const rows = Array.isArray(run.plan?.materialSummary) ? run.plan.materialSummary : Array.isArray(run.materialSummary) ? run.materialSummary : [];
+  const included = new Set(run.attachmentIds || []);
+  const mapped = rows.filter((item) => !item.id || included.has(item.id)).map((item) => ({ ...item, id: item.id || item.attachmentId }));
+  for (const id of included) if (!mapped.some((item) => item.id === id)) {
+    const current = active?.attachments.find((item) => item.id === id);
+    mapped.push({ id, name: current?.name || '历史材料 ' + id.slice(0, 8), mime: current?.mime, mode: 'unknown', warning: '本版本未提供识别摘要，请核对原始材料。' });
+  }
+  return mapped;
+}
+function materialDescription(item) {
+  const modes = { text: '提取文字', document: '文档文字提取', image: '图片识别', vision: '图片识别', extracted: '提取文字', unsupported: '未识别', unknown: '待核对', omitted: '未处理', pdf: 'PDF 文字提取' };
+  const imageNotAnalyzed = ['image', 'vision'].includes(item.mode) && !aiFor(currentRun()?.plan);
+  const parts = [imageNotAnalyzed ? '图片已纳入材料清单；本次仅生成基础方案，图片内容未完成识别' : item.method || modes[item.mode] || item.mode || '识别方式待核对'];
+  for (const key of ['summary', 'note', 'warning', 'reason', 'uncertainty']) if (typeof item[key] === 'string' && item[key]) parts.push(item[key]);
+  if (Array.isArray(item.warnings)) parts.push(...item.warnings);
+  if (Array.isArray(item.limitations)) parts.push(...item.limitations);
+  if (item.textCharacters !== undefined || item.textChars !== undefined || item.charCount !== undefined) parts.push('提取文字 ' + (item.textCharacters ?? item.textChars ?? item.charCount) + ' 字符');
+  if (item.pages) parts.push('共 ' + item.pages + ' 页');
+  if (item.unreadablePages?.length) parts.push('未提取文字的页码：' + item.unreadablePages.join('、'));
+  return parts.join('；');
+}
+function renderPlanState() {
+  const run = currentRun(); const pending = running.get(active?.id); const failure = runErrors.get(active?.id);
+  const notice = $('#generation-notice');
+  notice.hidden = !pending && !failure;
+  notice.className = 'notice' + (failure && !pending ? ' error' : '');
+  notice.textContent = pending ? '正在生成本案件方案。可切换案件，完成后结果将自动归入原记录。' : failure || '';
+  const selectionChanged = run && JSON.stringify([...selectedIds()].sort()) !== JSON.stringify([...(run.attachmentIds || [])].sort());
+  const stale = Boolean(run && (dirty || Number(run.revision) !== Number(active.revision)));
+  $('#stale-notice').hidden = !stale && !selectionChanged;
+  $('#stale-notice').textContent = stale ? '资料已更新，需重新生成。下方展示的是所选版本当时的案情与材料。' : '本次材料选择与该版本不同。下方仍为历史版本，重新生成后才会使用当前勾选材料。';
+  renderControls();
+}
+function renderPlan() {
+  const runs = active?.runs || []; const run = currentRun(); const select = $('#run-select'); select.replaceChildren(); select.disabled = !runs.length;
+  if (!runs.length) select.append(el('option', '', '暂无版本'));
+  runs.forEach((item, index) => { const option = el('option', '', '第 ' + (runs.length - index) + ' 版 · ' + dateTime(item.createdAt) + ' · 资料 v' + item.revision); option.value = item.id; option.selected = item.id === run?.id; select.append(option); });
+  $('#plan-empty').hidden = Boolean(run); $('#plan-report').hidden = !run;
+  $('#export-button').disabled = !run; $('#print-button').disabled = !run;
+  $('#plan-meta').textContent = run ? active.number + ' · 第 ' + (runs.length - runs.indexOf(run)) + ' 版 · ' + dateTime(run.createdAt) + ' · 当时资料版本 ' + run.revision : '保存并生成后可查看方案与版本记录';
+  renderPlanState();
+  if (!run?.plan) return;
+  const plan = run.plan;
+  renderOverview(plan, run); renderRunMaterials(run); renderAnalysis(plan); renderActions(plan); renderEvidence(plan); renderLetter(plan); renderSnapshot(plan, run);
+  const generation = plan.generation || {};
+  $('#generation-footer').textContent = '金额、日期、适用条件及官方来源由固定规则形成。方案研判、材料识别及沟通草稿需人工复核；未进行实时法律检索。' + (generation.provider || generation.model ? ' 生成服务：' + [generation.provider, generation.model].filter(Boolean).join(' / ') + '。' : '') + (generation.reason ? ' 生成说明：' + generation.reason : '');
+  selectReportTab(reportTab);
+}
+function sourceLinks(ids = []) {
+  const links = el('div', 'source-links');
+  ids.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
+  return links;
+}
 function sourceLink(source, label) {
-  const a = element('a', '', label || source.title);
-  a.href = source.url;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  a.title = source.title + ' · ' + source.locator;
-  return a;
+  const link = el('a', '', label || source.title); link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = source.title + ' · ' + source.locator; return link;
 }
-function renderOverview(plan, input) {
-  const card = element('article', 'overview-card');
-  const top = element('div', 'overview-top');
-  const badge = element('span', 'priority-tag ' + plan.priority.tone, plan.priority.label);
-  badge.title = plan.priority.reason;
-  top.append(element('span', 'eyebrow', '本次建议 · 按项目问题分流'), badge);
-  const beforeDue = input.dueDate > plan.generatedAt;
-  const blocked = plan.actions.some((action) => action.track === 'repair' && action.priority === '优先');
-  card.append(top, element('h3', '', beforeDue ? '先确认履约节点，提前落实付款安排' : blocked ? '先厘清项目争议，同步推动款项支付' : '从书面对账开始，分步推进回款'), element('p', 'strategy-text', plan.strategy));
-  const metrics = element('div', 'metric-row');
-  for (const item of [
-    { label: '待核对欠款', value: '¥' + plan.amount.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) },
-    { label: '按填报到期日计算', value: beforeDue ? '尚未到期' : plan.overdueDays === 0 ? '今日到期' : String(plan.overdueDays), unit: beforeDue || plan.overdueDays === 0 ? '' : '天', compact: beforeDue || plan.overdueDays === 0 },
-    { label: '建议协同', value: blocked ? '售后 + 财务 + 法务' : '商务 + 财务 + 法务', compact: true },
-  ]) {
-    const metric = element('div');
-    const value = element('strong', 'metric-value' + (item.compact ? ' compact' : ''), item.value);
-    if (item.unit) value.append(element('small', '', item.unit));
-    metric.append(element('span', 'metric-label', item.label), value);
-    metrics.append(metric);
+function renderOverview(plan, run) {
+  const panel = el('article', 'panel overview-panel'); const top = el('div', 'overview-top'); const priority = plan.priority || {};
+  top.append(el('h3', '', '回款推进建议'), el('span', 'priority-tag ' + (priority.tone || ''), priority.label || '待核查')); panel.append(top, el('p', '', plan.strategy || plan.summary));
+  const metrics = el('div', 'metric-row');
+  const beforeDue = run.inputSnapshot?.dueDate > plan.generatedAt;
+  for (const [label, value, compact] of [['待核对欠款', money(plan.amount ?? run.inputSnapshot?.amount), false], ['按当时填报到期日计算', beforeDue ? '尚未到期' : plan.overdueDays + ' 天', false], ['内部推进安排', priority.label || '按方案分工', true]]) {
+    const metric = el('div'); metric.append(el('span', 'metric-label', label), el('strong', 'metric-value' + (compact ? ' compact' : ''), value)); metrics.append(metric);
   }
-  card.append(metrics);
-  document.querySelector('#report-overview').replaceChildren(card);
+  panel.append(metrics); $('#report-overview').replaceChildren(panel);
 }
-function renderAI(plan) {
-  const target = document.querySelector('#report-ai');
-  const ai = aiFor(plan);
-  target.replaceChildren();
-  if (!ai) return;
-  const panel = element('article', 'panel ai-analysis');
-  const heading = element('h3'); heading.append(icon('spark'), document.createTextNode('DeepSeek 案情分析'));
-  panel.append(heading, element('p', 'ai-review', 'AI 补充内容 · 以用户描述为基础，需结合材料复核'));
-  if (ai.analysis) panel.append(element('p', 'ai-text', ai.analysis));
-  if (ai.strategy) panel.append(element('h4', '', '建议策略'), element('p', 'ai-text', ai.strategy));
-  if (ai.followUpQuestions.length) {
-    const list = element('ul', 'ai-questions');
-    ai.followUpQuestions.forEach((question) => list.append(element('li', '', question)));
-    panel.append(element('h4', '', '建议进一步确认'), list);
+function renderRunMaterials(run) {
+  const materials = runMaterials(run); const target = $('#run-materials'); target.replaceChildren();
+  $('#run-material-count').textContent = (run.attachmentIds || []).length + ' 个 · 当时选中';
+  if (!materials.length) target.append(el('div', 'material-run-row', '本版本未使用附件，仅依据当时填报的案情。'));
+  for (const item of materials) {
+    const row = el('div', 'material-run-row');
+    row.append(el('strong', '', item.name || '材料 ' + item.id), el('span', '', materialDescription(item)));
+    if (item.id && !active.attachments.some((attachment) => attachment.id === item.id)) row.append(el('small', '', ' · 已从当前资料移除；本行保留当时版本记录'));
+    target.append(row);
   }
-  target.append(panel);
+  const findings = aiFor(run.plan)?.materialFindings || [];
+  for (const finding of findings) {
+    const name = materials.find((item) => item.id === finding.attachmentId)?.name || '本次材料';
+    const row = el('div', 'material-run-row'); row.append(el('strong', '', name + ' · 识别提示'), el('span', '', finding.finding), el('small', '', [finding.location, finding.uncertainty].filter(Boolean).join('；'))); target.append(row);
+  }
 }
-function recommendationBlock(recommendation) {
-  const block = element('div', 'ai-recommendation');
-  block.append(element('h4', '', 'AI 补充建议 · 需复核'));
-  if (recommendation.advice) block.append(element('p', 'ai-text', recommendation.advice));
-  if (recommendation.steps.length) {
-    const list = element('ol'); recommendation.steps.forEach((step) => list.append(element('li', '', step))); block.append(list);
-  }
-  const links = element('div', 'source-links');
-  recommendation.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
-  if (links.childElementCount) block.append(element('p', 'ai-review', '固定目录中的参考来源，适用性需核查'), links);
-  return block;
+function renderAnalysis(plan) {
+  const ai = aiFor(plan); const target = $('#report-analysis'); target.replaceChildren(); if (!ai) return;
+  const panel = el('article', 'panel analysis-panel'); panel.append(el('h3', '', '方案研判'));
+  if (ai.analysis) panel.append(el('p', '', ai.analysis));
+  if (ai.strategy) panel.append(el('h4', '', '推进策略'), el('p', '', ai.strategy));
+  if (ai.followUpQuestions?.length) panel.append(el('h4', '', '待进一步确认'), list(ai.followUpQuestions)); target.append(panel);
 }
 function renderActions(plan) {
-  const grid = element('div', 'action-grid');
-  const recommendations = aiFor(plan)?.recommendations || [];
-  for (const action of plan.actions) {
-    const track = tracks[action.track];
-    const card = element('article', 'action-card');
-    const header = element('div', 'action-header');
-    const symbol = element('span', 'track-icon ' + action.track); symbol.append(icon(track.icon));
-    const title = element('div'); title.append(element('div', 'action-kicker', track.label), element('h3', '', action.title));
-    header.append(symbol, title, element('span', 'action-priority', action.priority));
-    const list = element('ol');
-    action.steps.forEach((step) => list.append(element('li', '', step)));
-    const meta = element('div', 'action-meta'); meta.append(element('span', '', '负责人：' + action.owner));
-    const details = element('details'); details.append(element('summary', '', '查看适用条件与材料'), element('p', '', '适用条件：' + action.condition), element('p', '', '推进时间：' + action.timing), element('p', '', '所需材料：' + action.materials.join('、')));
-    const links = element('div', 'source-links');
-    action.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) links.append(sourceLink(source)); });
-    card.append(header, element('p', 'action-reason', action.reason), list, meta, details, links);
-    recommendations.filter((item) => item.track === action.track).forEach((item) => card.append(recommendationBlock(item)));
+  const grid = el('div', 'action-grid'); const recommendations = aiFor(plan)?.recommendations || [];
+  for (const [track, label] of Object.entries(trackNames)) {
+    const actions = (plan.actions || []).filter((action) => action.track === track); const card = el('article', 'action-card');
+    if (!actions.length) { card.append(el('div', 'action-kicker', label), el('h3', '', '本版本未设置专项动作'), el('p', '', '请根据实际项目情况核查是否需要安排。')); grid.append(card); continue; }
+    for (const action of actions) {
+      const header = el('div', 'action-header'); const heading = el('div'); heading.append(el('div', 'action-kicker', label), el('h3', '', action.title)); header.append(heading, el('span', 'action-priority', action.priority));
+      card.append(header, el('p', '', action.reason), list(action.steps, true), el('div', 'action-meta', '负责人：' + action.owner));
+      const details = el('details'); details.append(el('summary', '', '适用条件与所需材料'), el('p', '', '适用条件：' + action.condition), el('p', '', '推进时间：' + action.timing), el('p', '', '材料：' + (action.materials || []).join('、'))); card.append(details, sourceLinks(action.sourceIds));
+    }
+    for (const recommendation of recommendations.filter((item) => item.track === track)) { const supplement = el('div', 'supplement-advice'); supplement.append(el('h4', '', '推进建议 · 需复核'), el('p', '', recommendation.advice), list(recommendation.steps, true), sourceLinks(recommendation.sourceIds)); card.append(supplement); }
     grid.append(card);
   }
-  const timelinePanel = element('article', 'panel timeline-panel');
-  const caption = element('h3', 'section-caption', '建议推进顺序'); caption.prepend(icon('clock'));
-  const timeline = element('div', 'timeline');
-  for (const stage of plan.timeline) {
-    const node = element('div', 'timeline-stage');
-    const list = element('ul'); stage.items.forEach((item) => list.append(element('li', '', item)));
-    node.append(element('span', '', '阶段 ' + stage.phase), element('h4', '', stage.title), list); timeline.append(node);
-  }
-  timelinePanel.append(caption, timeline);
-  document.querySelector('#report-actions').replaceChildren(grid, timelinePanel);
+  const timelinePanel = el('article', 'panel timeline-panel'); timelinePanel.append(el('h3', '', '建议推进顺序')); const timeline = el('div', 'timeline');
+  for (const stage of plan.timeline || []) { const node = el('div', 'timeline-stage'); node.append(el('span', '', '阶段 ' + stage.phase), el('h4', '', stage.title), list(stage.items)); timeline.append(node); }
+  timelinePanel.append(timeline); $('#report-actions').replaceChildren(grid, timelinePanel);
 }
 function renderEvidence(plan) {
-  const gaps = element('article', 'panel evidence-card');
-  gaps.append(element('h3', '', '建议补充与确认')); const gapList = element('ul', 'gap-list');
-  plan.missingInfo.forEach((gap) => gapList.append(element('li', '', gap)));
-  if (!plan.missingInfo.length) gapList.append(element('li', '', '输入项已补充，仍需核查实际材料的内容与证明力。'));
-  gaps.append(gapList);
-  const evidence = element('article', 'panel evidence-card'); evidence.append(element('h3', '', '材料准备清单'));
-  for (const item of plan.evidenceChecklist) {
-    const row = element('div', 'evidence-row' + (item.present ? ' present' : '')); const copy = element('div');
-    copy.append(element('strong', '', item.label), element('p', '', item.reason));
-    row.append(icon(item.present ? 'check' : 'circle'), copy, element('span', 'evidence-status', item.present ? '用户称已持有' : '待准备 / 核实')); evidence.append(row);
-  }
-  const facts = element('article', 'panel evidence-card'); facts.append(element('h3', '', '本次输入的事实记录'));
-  for (const fact of plan.facts) { const row = element('div', 'evidence-row'); const copy = element('div'); copy.append(element('strong', '', fact.label), element('p', '', fact.value)); row.append(copy); facts.append(row); }
-  const caution = element('article', 'panel caution-list'); caution.append(element('h3', '', '核查提醒')); const list = element('ul'); plan.caution.forEach((item) => list.append(element('li', '', item))); caution.append(list);
-  document.querySelector('#report-evidence').replaceChildren(gaps, evidence, facts, caution);
-  document.querySelector('#gap-count').textContent = plan.missingInfo.length;
+  const gaps = el('article', 'panel evidence-card'); gaps.append(el('h3', '', '建议补充与确认'), list(plan.missingInfo?.length ? plan.missingInfo : ['填报项目已补充，仍需核对实际材料及其证明力。']));
+  const evidence = el('article', 'panel evidence-card'); evidence.append(el('h3', '', '材料准备清单（当时填报）'));
+  for (const item of plan.evidenceChecklist || []) { const row = el('div', 'evidence-row' + (item.present ? ' present' : '')); const copy = el('div'); copy.append(el('strong', '', item.label), el('p', '', item.reason)); row.append(copy, el('span', 'evidence-status', item.present ? '填报已持有' : '待准备 / 核实')); evidence.append(row); }
+  const caution = el('article', 'panel evidence-card'); caution.append(el('h3', '', '核查提醒'), list(plan.caution)); $('#report-evidence').replaceChildren(gaps, evidence, caution);
 }
 function renderLetter(plan) {
-  const panel = element('article', 'panel letter-panel'); const top = element('div', 'letter-top');
-  const aiDraft = aiFor(plan)?.communicationDraft;
-  draftMode = aiDraft ? 'ai' : 'rules';
-  const draft = element('pre', 'letter-text');
-  const draftLabel = element('p', 'draft-label');
-  const showDraft = () => {
-    draft.textContent = draftMode === 'ai' ? aiDraft : plan.letterDraft;
-    draftLabel.textContent = draftMode === 'ai' ? '正在查看：AI 沟通草稿 · 需逐项核对事实、金额与日期' : '正在查看：固定规则沟通草稿 · 需核查后使用';
-  };
-  const button = element('button', 'button secondary small', '复制草稿'); button.type = 'button'; button.prepend(icon('copy'));
-  button.addEventListener('click', async () => {
-    const copyingAI = draftMode === 'ai';
-    try { await navigator.clipboard.writeText(draft.textContent); toast((copyingAI ? 'AI 沟通草稿' : '规则沟通草稿') + '已复制，请核查后使用'); }
-    catch { toast('浏览器未允许复制，可选中下方草稿复制'); }
-  });
-  top.append(element('h3', '', '回款与项目事项沟通函'), button);
-  panel.append(top, element('p', 'letter-help', '这是业务沟通草稿。请补齐双方名称、联系人及回复日期，核对事实、金额、日期与法律表述后使用；系统不会自动发送。'));
-  if (aiDraft) {
-    const choice = element('div', 'draft-choice');
-    const label = element('label', '', '选择草稿'); label.htmlFor = 'draft-choice';
-    const select = element('select'); select.id = 'draft-choice';
-    const aiOption = element('option', '', 'AI 草稿 · 需复核'); aiOption.value = 'ai';
-    const rulesOption = element('option', '', '固定规则草稿'); rulesOption.value = 'rules';
-    select.append(aiOption, rulesOption);
-    select.addEventListener('change', () => { draftMode = select.value; showDraft(); });
-    choice.append(label, select); panel.append(choice);
-  }
-  showDraft(); panel.append(draftLabel, draft);
-  document.querySelector('#report-letter').replaceChildren(panel);
+  const panel = el('article', 'panel letter-panel'); const top = el('div', 'letter-top'); const copy = button('复制草稿'); const aiDraft = aiFor(plan)?.communicationDraft; const draft = el('pre', 'letter-text');
+  top.append(el('h3', '', '回款与项目事项沟通函'), copy); panel.append(top, el('p', 'letter-help', '请补齐名称、联系人及回复日期，并核对事实、金额、日期与法律表述后使用。'));
+  const show = () => { draft.textContent = draftMode === 'supplement' && aiDraft ? aiDraft : plan.letterDraft || ''; };
+  if (aiDraft) { const choice = el('div', 'draft-choice'); const label = el('label', '', '草稿版本'); label.htmlFor = 'draft-choice'; const select = el('select'); select.id = 'draft-choice'; for (const [value, text] of [['supplement', '沟通草稿 · 需复核'], ['rules', '基础草稿']]) { const option = el('option', '', text); option.value = value; select.append(option); } select.value = draftMode; select.addEventListener('change', () => { draftMode = select.value; show(); }); choice.append(label, select); panel.append(choice); }
+  copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(draft.textContent); toast('草稿已复制，请核对后使用'); } catch { toast('浏览器未允许复制，请选中文本复制'); } });
+  show(); panel.append(draft); $('#report-letter').replaceChildren(panel);
 }
-function renderSources() {
-  const catalog = document.querySelector('#source-catalog');
-  for (const source of SOURCES) {
-    const card = element('article', 'panel source-card');
-    card.append(element('span', 'source-kind', source.kind === 'law' ? '法律法规 · 官方全文' : '官方渠道 · 办事与受理条件'), element('h2', '', source.title), element('p', 'source-meta', source.issuer), element('p', '', '适用提示摘要：' + source.summary));
-    if (source.articles.length) card.append(element('p', '', '条号定位：' + source.articles.join('、')));
-    card.append(element('p', 'source-meta', source.locator), element('p', 'source-meta', source.versionNote), element('p', 'source-meta', '最近资料核查：' + source.verifiedAt));
-    const link = sourceLink(source, source.kind === 'law' ? '查看官方原文' : '前往官方入口'); link.append(icon('external')); card.append(link);
-    if (source.authorityUrl) { const authority = sourceLink({ ...source, url: source.authorityUrl }, '核查官方办事说明'); authority.style.marginLeft = '16px'; card.append(authority); }
-    if (source.rulesUrl) { const rules = sourceLink({ ...source, url: source.rulesUrl }, '核查受理规则'); rules.style.marginLeft = '16px'; card.append(rules); }
-    catalog.append(card);
-  }
+function renderSnapshot(plan, run) {
+  const panel = el('article', 'panel snapshot-panel'); panel.append(el('h3', '', '当时案情 · 资料版本 ' + run.revision)); const table = el('table', 'snapshot-table');
+  for (const fact of plan.facts || []) { const row = el('tr'); row.append(el('th', '', fact.label), el('td', '', fact.value)); table.append(row); }
+  panel.append(table, el('p', 'report-footnote', '此处为生成该版本时的案情快照，当前基本信息请在“基本信息”中查看。')); $('#report-snapshot').replaceChildren(panel);
 }
-function renderPlan(plan, input, samplePreview = false) {
-  currentPlan = plan;
-  renderOverview(plan, input); renderAI(plan); renderActions(plan); renderEvidence(plan); renderLetter(plan);
-  renderGenerationNotice(plan);
-  document.querySelector('#report-status').textContent = (samplePreview ? '虚构示例 · 本机规则预览' : aiFor(plan) ? 'DeepSeek AI + 固定规则' : '仅规则结果 · 未生成 AI') + ' · ' + plan.generatedAt;
-  if (!samplePreview) document.querySelector('#sample-label').textContent = (isSample ? '虚构示例' : '当前输入') + (aiFor(plan) ? ' · AI 分析已生成' : ' · 本次仅规则结果');
-  document.querySelector('#dirty-notice').hidden = true;
-  document.querySelector('#form-error').hidden = true;
-  document.querySelector('#export-button').disabled = false;
-  document.querySelector('#print-button').disabled = false;
-  selectTab('actions');
+function renderNotes() {
+  const target = $('#notes-list'); target.replaceChildren(); const notes = active?.notes || [];
+  if (!notes.length) target.append(el('p', 'note-empty', '暂无跟进记录。添加备注后可在本案件中持续查看。'));
+  for (const note of notes) { const node = el('article', 'note-item'); const time = el('time', '', dateTime(note.createdAt)); time.dateTime = note.createdAt; node.append(time, el('p', '', note.body)); target.append(node); }
 }
-const samples = {
-  equipment: { amount: 328000, dueDate: () => shiftedDate(-90), issueText: '设备已交付，客户反馈运行不稳定，以维修和验收未完成为由暂缓支付尾款。双方尚未确认故障原因和费用承担，希望推动售后处理并争取先收回无争议部分。', issueTypes: ['repair', 'acceptance'], evidence: ['contract', 'delivery', 'invoice'], acceptanceStatus: 'disputed' },
-  general: { amount: 186000, dueDate: () => shiftedDate(-60), issueText: '我方为中小企业，货物已交付且完成验收。对方为大型企业，反馈资金安排紧张，希望延后付款。尚未取得书面付款计划，拟先对账并核查适用投诉渠道。以上均为虚构示例。', issueTypes: ['cashflow'], evidence: ['contract', 'delivery', 'acceptance', 'invoice', 'reconciliation'], acceptanceStatus: 'passed', debtorType: 'large', creditorSize: 'sme', disputeAccepted: 'no', disputeClause: 'court' },
-  construction: { amount: 760000, dueDate: () => shiftedDate(-180), issueText: '项目已交付使用，但结算审核尚未完成，双方对部分工程量存在争议。客户以结算未完成为由暂缓付款，需要先核查合同付款节点、项目记录和无争议金额。以上均为虚构示例。', issueTypes: ['acceptance', 'dispute'], evidence: ['contract', 'delivery', 'collection'], acceptanceStatus: 'pending' },
-};
-function loadSample(kind) {
-  cancelPending();
-  form.reset();
-  const sample = samples[kind];
-  form.elements.projectType.value = kind;
-  for (const [key, value] of Object.entries(sample)) {
-    if (Array.isArray(value)) form.querySelectorAll(`input[name="${key}"]`).forEach((node) => { node.checked = value.includes(node.value); });
-    else form.elements[key].value = typeof value === 'function' ? value() : value;
-  }
-  document.querySelectorAll('[data-scenario]').forEach((button) => button.classList.toggle('active', button.dataset.scenario === kind));
-  document.querySelector('#sample-label').textContent = '示例预览，点击使用 AI 生成'; isSample = true;
-  const input = getInput();
-  renderPlan(rulesPlan(generatePlan(input, chinaToday()), '示例预览，点击“使用 AI 生成”获取 DeepSeek 分析。当前仅为本机规则结果，未调用 AI；示例不含真实企业数据。'), input, true);
-}
-document.querySelectorAll('[data-scenario]').forEach((button) => button.addEventListener('click', () => { loadSample(button.dataset.scenario); toast('已载入虚构示例，本机预览未调用 AI'); }));
-function markEdited() {
-  const wasGenerating = Boolean(activeRequest);
-  cancelPending();
-  isSample = false; document.querySelector('#sample-label').textContent = '正在编辑输入';
-  document.querySelector('#dirty-notice').textContent = (wasGenerating ? '输入已修改，已取消本次等待；已发出的请求可能仍在服务端处理。' : '输入已修改，当前结果对应修改前的输入。') + '请点击“使用 AI 生成”更新结果。';
-  document.querySelector('#dirty-notice').hidden = false;
-  document.querySelector('#form-error').hidden = true;
-}
-form.addEventListener('input', markEdited);
-form.addEventListener('change', markEdited);
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (activeRequest) return;
-  let input;
-  let basePlan;
+function renderCurrent() { renderHeader(); renderAttachments(); renderPlan(); renderNotes(); renderControls(); }
+async function beginAnalysis() {
+  if (running.has(active?.id) || navigating) return;
+  clearError();
   try {
-    input = getInput();
-    basePlan = generatePlan(input, chinaToday());
-  } catch (error) {
-    const node = document.querySelector('#form-error'); node.textContent = error.message; node.hidden = false;
-    return;
-  }
-  document.querySelector('#form-error').hidden = true;
-  const controller = new AbortController();
-  const version = ++requestVersion;
-  const pending = { controller, timer: undefined, timedOut: false };
-  pending.timer = setTimeout(() => { pending.timedOut = true; controller.abort(); }, 65000);
-  activeRequest = pending;
-  setLoading(true);
-  const notice = document.querySelector('#generation-notice'); notice.classList.remove('ai-ready');
-  notice.textContent = 'DeepSeek 正在分析本次案情，可能需要约一分钟。下方仍为上次结果；修改输入或切换示例会取消本次等待。';
-  let failureMessage;
-  try {
-    const response = await fetch('/api/plan', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: controller.signal });
-    let payload;
-    try { payload = await response.json(); } catch { throw new Error('invalid-response'); }
-    if (!response.ok) {
-      // The same-origin endpoint returns safe, user-facing messages only.
-      failureMessage = aiText(payload?.error) || (response.status === 429 ? '请求较多，请稍后再试。' : 'AI 服务暂时不可用，请稍后重试。');
-      throw new Error('service-error');
-    }
-    const plan = normalizeResponse(payload?.plan, basePlan);
-    if (version !== requestVersion || activeRequest !== pending) return;
-    renderPlan(plan, input);
-    toast(aiFor(plan) ? 'DeepSeek 补充分析已生成，请复核后使用' : '本次未生成 AI，已展示规则结果');
-  } catch (error) {
-    if (version !== requestVersion || activeRequest !== pending) return;
-    const reason = pending.timedOut
-      ? 'AI 请求等待超过 65 秒，本次未获得 AI 结果。已使用本机规则结果，可稍后重试。'
-      : failureMessage ? failureMessage + ' 本次未生成 AI，已使用本机规则结果。'
-        : error.message === 'invalid-response' ? 'AI 服务返回的内容无法使用，本次未生成 AI，已使用本机规则结果。'
-          : '无法连接 AI 服务，本次未生成 AI，已使用本机规则结果。请检查网络连接或稍后重试。';
-    renderPlan(rulesPlan(basePlan, reason), input);
-    toast('AI 未生成，已回退为本机规则结果');
-  } finally {
-    clearTimeout(pending.timer);
-    if (version === requestVersion && activeRequest === pending) {
-      activeRequest = undefined;
-      setLoading(false);
-      if (window.innerWidth <= 720) document.querySelector('#result-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
-});
-document.querySelector('#reset-button').addEventListener('click', () => {
-  cancelPending();
-  form.reset(); form.elements.amount.value = ''; form.elements.dueDate.value = ''; form.elements.issueText.value = ''; isSample = false;
-  currentPlan = undefined;
-  ['#report-overview', '#report-ai', '#report-actions', '#report-evidence', '#report-letter'].forEach((selector) => document.querySelector(selector).replaceChildren());
-  document.querySelector('#print-report').textContent = '';
-  document.querySelector('#gap-count').textContent = '';
-  document.querySelector('#report-status').textContent = '等待填写';
-  document.querySelector('#generation-notice').textContent = '填写案情后点击“使用 AI 生成”。提交会将本次案情经服务端发送至 DeepSeek。';
-  document.querySelector('#generation-notice').classList.remove('ai-ready');
-  document.querySelector('#export-button').disabled = true;
-  document.querySelector('#print-button').disabled = true;
-  document.querySelector('#sample-label').textContent = '请填写新的案件信息';
-  document.querySelector('#dirty-notice').textContent = '表单与结果已清空，请填写后重新生成。';
-  document.querySelector('#dirty-notice').hidden = false;
-  document.querySelector('#form-error').hidden = true;
-  document.querySelectorAll('[data-scenario]').forEach((button) => button.classList.remove('active'));
-  form.elements.amount.focus();
-});
+    await queueWrite(async () => {
+      // Draft saving and analysis validation are intentionally separate.
+      const input = getInput();
+      if (!form.checkValidity()) { selectCaseTab('info'); form.reportValidity(); return; }
+      try { generatePlan(input, chinaDateOffset()); } catch (error) { selectCaseTab('info'); $('#form-error').textContent = error.message; $('#form-error').hidden = false; return; }
+      const record = await saveDraftNow({ force: true });
+      const recordId = record.id; const ids = selectedIds(record);
+      if (record.attachments.filter((item) => ids.includes(item.id)).reduce((sum, item) => sum + item.size, 0) > 12 * 1048576) throw new Error('本次选中资料超过 12 MB，请减少选中材料后再生成。');
+      if (running.has(recordId)) return;
+      running.set(recordId, { revision: record.revision, attachmentIds: [...ids] }); runErrors.delete(recordId);
+      selectCaseTab('plan'); renderPlanState(); renderHistory();
+      // Do not abort this request when switching records. The result belongs to recordId.
+      void api('/api/records/' + encodeURIComponent(recordId) + '/analyze', { method: 'POST', body: { revision: record.revision, attachmentIds: ids } }).then((payload) => {
+        const received = payload.record;
+        if (payload.run && !(received.runs || []).some((run) => run.id === payload.run.id)) received.runs = [...(received.runs || []), { ...payload.run, plan: payload.run.plan || payload.plan }];
+        const updated = acceptRecord(received);
+        if (payload.run) selectedRuns.set(recordId, payload.run.id);
+        running.delete(recordId);
+        if (active?.id === recordId) { renderCurrent(); if (payload.stale) toast('方案已保存。生成期间资料发生变更，请重新生成以更新。'); else toast('回款方案已保存至当前案件，请复核后使用'); }
+        else toast(updated.number + ' 的回款方案已生成并归档');
+        renderHistory();
+      }).catch((error) => {
+        running.delete(recordId); runErrors.set(recordId, '本次生成未完成：' + error.message + '。已保存的案情与材料仍保留，可重试。');
+        if (active?.id === recordId) { showError(error, recordId); renderPlanState(); } else toast(record.number + ' 生成未完成，案情与材料已保留');
+        renderHistory();
+      });
+    });
+  } catch (error) { showError(error); }
+}
 function reportText() {
-  const p = currentPlan;
-  if (!p) return '';
-  const ai = aiFor(p);
-  const lines = ['企业回款推进方案（需人工复核）', '分析日期：' + p.generatedAt, '生成方式：' + (ai ? 'DeepSeek AI 补充分析 + 固定规则基础' : '仅固定规则，未生成 AI'), '服务提供方：DeepSeek' + (p.generation.model ? ' · 模型：' + p.generation.model : '')];
-  if (p.generation.reason) lines.push('生成说明：' + p.generation.reason);
-  lines.push('', '【输入与固定规则判断】', ...p.facts.map((fact) => fact.label + '：' + fact.value), '', '【整体建议 · 固定规则】', p.summary, p.strategy, '内部推进优先级：' + p.priority.label, p.priority.reason);
-  if (ai) {
-    lines.push('', '【DeepSeek AI 案情分析 · 需复核】', ai.analysis, 'AI 建议策略：' + ai.strategy);
-    for (const item of ai.recommendations) {
-      lines.push('', '【AI 补充 · ' + tracks[item.track].label + '】', item.advice, ...item.steps.map((step, index) => (index + 1) + '. ' + step));
-      item.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) lines.push('固定目录参考来源（适用性需核查）：' + source.title, source.url); });
-    }
-    if (ai.followUpQuestions.length) lines.push('', '【AI 建议进一步确认】', ...ai.followUpQuestions.map((item) => '- ' + item));
+  const run = currentRun(); if (!run) return '';
+  const plan = run.plan; const ai = aiFor(plan); const lines = ['应收账款管理平台 · 回款方案（需人工复核）', '案件编号：' + active.number, '当前案件名称：' + active.title, '方案版本：第 ' + (active.runs.length - active.runs.indexOf(run)) + ' 版', '资料版本：' + run.revision, '生成时间：' + dateTime(run.createdAt), '当前资料版本：' + active.revision, '版本状态：' + (dirty || Number(run.revision) !== Number(active.revision) ? '资料已更新，需重新生成；下文为历史快照' : '对应当前已保存资料'), '', '【当时案情】', ...(plan.facts || []).map((fact) => fact.label + '：' + fact.value), '', '【本次材料清单与识别提示】'];
+  const materials = runMaterials(run);
+  lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
+  for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
+  lines.push('', '【整体推进建议】', plan.summary || '', plan.strategy || '', plan.priority?.label || '', plan.priority?.reason || '');
+  if (ai) lines.push('', '【方案研判】', ai.analysis || '', ai.strategy || '', ...(ai.followUpQuestions || []).map((item) => '待确认：' + item));
+  for (const action of plan.actions || []) {
+    lines.push('', '【' + trackNames[action.track] + '】' + action.title, '负责人：' + action.owner, '时间：' + action.timing, '原因：' + action.reason, ...(action.steps || []).map((step, index) => (index + 1) + '. ' + step), '适用条件：' + action.condition, '材料：' + (action.materials || []).join('、'));
+    for (const id of action.sourceIds || []) { const source = sourceMap.get(id); if (source) lines.push('官方来源：' + source.title, source.url, '定位：' + (source.articles?.join('、') || source.locator), '资料核查：' + source.verifiedAt); }
   }
-  for (const action of p.actions) {
-    lines.push('', '【固定规则 · ' + tracks[action.track].label + '】' + action.title, '负责人：' + action.owner, '安排：' + action.timing, '原因：' + action.reason, ...action.steps.map((step, index) => (index + 1) + '. ' + step), '条件：' + action.condition, '材料：' + action.materials.join('、'));
-    action.sourceIds.forEach((id) => { const source = sourceMap.get(id); if (source) lines.push('官方依据 / 渠道：' + source.title + '\n' + source.url + '\n定位：' + (source.articles.join('、') || source.locator) + '\n资料核查日期：' + source.verifiedAt); });
-  }
-  lines.push('', '【建议推进顺序】', ...p.timeline.flatMap((stage) => [stage.phase + ' ' + stage.title, ...stage.items.map((item) => '- ' + item)]), '', '【待补充与确认】', ...p.missingInfo.map((item) => '- ' + item), '', '【材料清单】', ...p.evidenceChecklist.map((item) => (item.present ? '[用户称已持有] ' : '[待准备] ') + item.label + '：' + item.reason), '', '当前查看的草稿：' + (draftMode === 'ai' && ai?.communicationDraft ? 'AI 草稿' : '固定规则草稿'), '', '【固定规则沟通函草稿 · 需复核】', p.letterDraft);
-  if (ai?.communicationDraft) lines.push('', '【AI 沟通函草稿 · 需复核事实、金额、日期与法律表述】', ai.communicationDraft);
-  lines.push('', '【核查提醒】', ...p.caution.map((item) => '- ' + item), '', '固定规则与官方来源提供法律条件基础；AI 内容仅作补充，均需人工复核。生成时未进行实时法律检索，未解析合同附件。点击 AI 生成会将本次案情经服务端发送至 DeepSeek，本演示不保存历史案例。');
+  for (const recommendation of ai?.recommendations || []) lines.push('', '【推进建议 · ' + trackNames[recommendation.track] + '】', recommendation.advice, ...(recommendation.steps || []).map((step) => '- ' + step));
+  lines.push('', '【推进顺序】', ...(plan.timeline || []).flatMap((stage) => [stage.phase + ' ' + stage.title, ...(stage.items || []).map((item) => '- ' + item)]), '', '【证据缺口】', ...(plan.missingInfo || []).map((item) => '- ' + item), '', '【材料准备清单】', ...(plan.evidenceChecklist || []).map((item) => (item.present ? '[当时填报已持有] ' : '[待准备] ') + item.label + '：' + item.reason), '', '【基础沟通函草稿】', plan.letterDraft || '');
+  if (ai?.communicationDraft) lines.push('', '【沟通草稿 · 需复核】', ai.communicationDraft);
+  lines.push('', '【核查提醒】', ...(plan.caution || []), '', '【当前案件跟进记录】', ...(active.notes || []).map((note) => dateTime(note.createdAt) + ' ' + note.body), '', '生成服务：' + [plan.generation?.provider, plan.generation?.model].filter(Boolean).join(' / '), '生成说明：' + (plan.generation?.reason || '按本版本案情与选中材料生成'), '金额、日期、条件及官方来源由固定规则形成，方案研判、材料识别与草稿需人工复核；生成时未进行实时法律检索。');
   return lines.join('\n');
 }
-document.querySelector('#export-button').addEventListener('click', () => {
-  if (!currentPlan) return;
-  const blob = new Blob(['\uFEFF' + reportText()], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = element('a');
-  a.href = url; a.download = '回款推进方案-' + currentPlan.generatedAt + '.txt'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('已导出当前生成的文本方案');
-});
-document.querySelector('#print-button').addEventListener('click', () => { if (!currentPlan) return; document.querySelector('#print-report').textContent = reportText(); window.print(); });
-window.addEventListener('beforeprint', () => { if (currentPlan) document.querySelector('#print-report').textContent = reportText(); });
-async function checkService() {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const response = await fetch('/api/health', { credentials: 'same-origin', signal: controller.signal });
-    if (!response.ok) throw new Error('health-unavailable');
-    const payload = await response.json();
-    serviceState = { configured: payload.configured === true, model: aiText(payload.model), checked: true };
-    document.querySelector('#provider-status').textContent = serviceState.configured ? 'DeepSeek · 已配置' : 'DeepSeek · 未配置';
-    document.querySelector('#provider-note').textContent = serviceState.configured
-      ? 'DeepSeek 已配置' + (serviceState.model ? ' · ' + serviceState.model : '') + '。点击生成才调用 AI，示例切换不调用。'
-      : '服务端尚未配置 DeepSeek。仍可点击生成并获得规则方案；页面不需要填写密钥。';
-  } catch {
-    serviceState = { configured: false, model: '', checked: true };
-    document.querySelector('#provider-status').textContent = 'DeepSeek · 服务未连接';
-    document.querySelector('#provider-note').textContent = '暂时无法检查 AI 服务。可尝试生成；调用失败会明确回退为本机规则结果。';
-  } finally { clearTimeout(timer); }
+function renderSources() {
+  for (const source of SOURCES) {
+    const card = el('article', 'panel source-card'); card.append(el('span', 'source-kind', source.kind === 'law' ? '法律法规 · 官方全文' : '官方渠道 · 办事条件'), el('h2', '', source.title), el('p', 'source-meta', source.issuer), el('p', '', '适用提示摘要：' + source.summary));
+    if (source.articles?.length) card.append(el('p', '', '条号定位：' + source.articles.join('、')));
+    card.append(el('p', 'source-meta', source.locator), el('p', 'source-meta', source.versionNote), el('p', 'source-meta', '资料核查：' + source.verifiedAt), sourceLink(source, source.kind === 'law' ? '查看官方原文' : '前往官方入口'));
+    if (source.authorityUrl) card.append(sourceLink({ ...source, url: source.authorityUrl }, '官方办事说明'));
+    if (source.rulesUrl) card.append(sourceLink({ ...source, url: source.rulesUrl }, '核查受理规则')); $('#source-catalog').append(card);
+  }
 }
-renderSources();
-loadSample('equipment');
-selectTab('actions');
-checkService();
+async function checkHealth() {
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    service = await api('/api/health', { signal: controller.signal });
+    $('#storage-status').textContent = service.storageConfigured === false ? '数据存储未配置' : '服务器记录存储';
+    $('#storage-dot').className = 'connection-dot ' + (service.storageConfigured === false ? 'error' : 'connected');
+  } catch { $('#storage-status').textContent = '暂时无法连接服务器'; $('#storage-dot').className = 'connection-dot error'; }
+  finally { clearTimeout(timer); }
+}
+
+form.addEventListener('input', () => { dirty = true; editVersion += 1; clearError(); renderHeader(); renderPlanState(); });
+form.addEventListener('change', () => { dirty = true; editVersion += 1; clearError(); renderHeader(); renderPlanState(); });
+form.addEventListener('submit', (event) => { event.preventDefault(); clearError(); saveDraft({ force: true }).then(() => toast('基本信息已保存')).catch(showError); });
+$('#save-button').addEventListener('click', () => { clearError(); saveDraft({ force: true }).then(() => toast('案件已保存')).catch(showError); });
+$('#generate-button').addEventListener('click', beginAnalysis);
+$('#new-record').addEventListener('click', () => navigate());
+$('#create-sample').addEventListener('click', () => navigate(null, true));
+$('#reload-record').addEventListener('click', () => { if (active) navigate(active.id, false, true); });
+$('#archive-button').addEventListener('click', async () => {
+  const recordId = active?.id; if (!recordId) return;
+  clearError();
+  try { await queueWrite(async () => { const record = await saveDraftNow(); const status = record.status === 'archived' ? 'active' : 'archived'; const payload = await api('/api/records/' + encodeURIComponent(recordId), { method: 'PATCH', body: { revision: record.revision, status } }); acceptRecord(payload.record); if (active?.id === recordId) renderCurrent(); toast(status === 'archived' ? '案件已归档，可在“已归档”中查看与恢复' : '案件已恢复为进行中'); }); }
+  catch (error) { showError(error, recordId); }
+});
+$('#choose-files').addEventListener('click', () => $('#file-input').click()); $('#choose-images').addEventListener('click', () => $('#image-input').click());
+for (const selector of ['#file-input', '#image-input']) $(selector).addEventListener('change', (event) => { uploadFiles(event.target.files); event.target.value = ''; });
+const dropZone = $('#drop-zone');
+for (const type of ['dragenter', 'dragover']) dropZone.addEventListener(type, (event) => { event.preventDefault(); dropZone.classList.add('drag-over'); });
+for (const type of ['dragleave', 'drop']) dropZone.addEventListener(type, (event) => { event.preventDefault(); dropZone.classList.remove('drag-over'); });
+dropZone.addEventListener('drop', (event) => { if (!pendingWrites && !conflicted) uploadFiles(event.dataTransfer.files); });
+$('#close-preview').addEventListener('click', () => $('#preview-dialog').close());
+$('#preview-dialog').addEventListener('close', () => $('#preview-content').replaceChildren());
+$('#run-select').addEventListener('change', (event) => { if (active) { selectedRuns.set(active.id, event.target.value); renderPlan(); } });
+$('#note-body').addEventListener('input', () => noteDrafts.set(active?.id || 'draft', $('#note-body').value));
+$('#note-form').addEventListener('submit', async (event) => {
+  event.preventDefault(); const body = $('#note-body').value.trim(); if (!body) { toast('请先填写跟进内容'); return; }
+  const origin = active?.id;
+  try { await queueWrite(async () => { const record = await saveDraftNow({ force: true }); const recordId = record.id; const payload = await api('/api/records/' + encodeURIComponent(recordId) + '/notes', { method: 'POST', body: { body } }); acceptRecord(payload.record); if (active?.id === recordId) { if ($('#note-body').value.trim() === body) { $('#note-body').value = ''; noteDrafts.delete(recordId); } renderCurrent(); } toast('跟进记录已保存'); }); }
+  catch (error) { showError(error, origin || active?.id); }
+});
+$('#export-button').addEventListener('click', () => { const run = currentRun(); if (!run) return; const url = URL.createObjectURL(new Blob(['\uFEFF' + reportText()], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = '回款方案-' + active.number + '-资料v' + run.revision + '-' + run.id.slice(0, 8) + '.txt'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
+$('#print-button').addEventListener('click', () => { if (!currentRun()) return; $('#print-report').textContent = reportText(); window.print(); });
+window.addEventListener('beforeprint', () => { $('#print-report').textContent = reportText(); });
+window.addEventListener('beforeunload', (event) => { if (dirty || pendingWrites > 0) { event.preventDefault(); event.returnValue = ''; } });
+$('#history-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadHistory(), 250); });
+$('#refresh-history').addEventListener('click', () => loadHistory());
+$$('[data-status]').forEach((node) => node.addEventListener('click', () => { filterStatus = node.dataset.status; $$('[data-status]').forEach((item) => { item.classList.toggle('active', item === node); item.setAttribute('aria-pressed', String(item === node)); }); loadHistory(); }));
+$$('[data-view]').forEach((node) => node.addEventListener('click', () => showView(node.dataset.view)));
+$('.brand').addEventListener('click', (event) => { event.preventDefault(); showView('workspace'); });
+$$('[data-case-tab]').forEach((node) => node.addEventListener('click', () => selectCaseTab(node.dataset.caseTab)));
+$$('[data-report-tab]').forEach((node) => node.addEventListener('click', () => selectReportTab(node.dataset.reportTab)));
+tabKeyboard($$('[data-case-tab]'), (node) => selectCaseTab(node.dataset.caseTab)); tabKeyboard($$('[data-report-tab]'), (node) => selectReportTab(node.dataset.reportTab));
+fillForm(null); renderSources(); renderCurrent(); selectCaseTab(caseTab); checkHealth(); loadHistory({ initial: true });

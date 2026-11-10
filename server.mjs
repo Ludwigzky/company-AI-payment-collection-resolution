@@ -4,9 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { handleAPI } from './src/api.js';
+import { createLocalStorage } from './src/local-storage.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('./dist/', import.meta.url)));
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const storage = await createLocalStorage();
 let port = Number(process.env.PORT || 4173);
 const server = http.createServer(async (req, res) => {
   try {
@@ -18,7 +20,7 @@ const server = http.createServer(async (req, res) => {
         headers: req.headers,
         ...(!['GET', 'HEAD'].includes(method) ? { body: Readable.toWeb(req), duplex: 'half' } : {}),
       });
-      const response = await handleAPI(request, { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL });
+      const response = await handleAPI(request, { DB: storage.DB, BUCKET: storage.BUCKET, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL }, { localOwnerId: 'local-preview-user' });
       res.writeHead(response.status, Object.fromEntries(response.headers));
       res.end(Buffer.from(await response.arrayBuffer()));
       return;

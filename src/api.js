@@ -1,4 +1,5 @@
 import { generateAIPlan, getAIConfiguration, InputError } from './ai.js';
+import { handleWorkspaceAPI } from './workspace-api.js';
 
 const BODY_LIMIT = 32 * 1024;
 const HEADERS = {
@@ -45,12 +46,14 @@ export async function handleAPI(request, env = {}, options = {}) {
     return json({ error: '请从本站页面提交请求。' }, 403);
   }
   const route = url.pathname;
+  if (route === '/api/records' || route.startsWith('/api/records/')) return handleWorkspaceAPI(request, env, options);
+  if (route === '/api/plan' && env.DB) return json({ error: '请在案件记录内生成方案，确保材料与结果归档。' }, 409);
   if (route !== '/api/health' && route !== '/api/plan') return json({ error: '接口不存在。' }, 404);
   const method = route === '/api/health' ? 'GET' : 'POST';
   if (request.method !== method) return json({ error: '请求方法不支持。' }, 405, { Allow: method });
   if (route === '/api/health') {
     const { configured, model } = getAIConfiguration(env);
-    return json({ provider: 'DeepSeek', configured, model });
+    return json({ provider: 'DeepSeek', configured, model, ...('DB' in env || 'BUCKET' in env ? { storageConfigured: Boolean(env.DB?.prepare && env.BUCKET?.get) } : {}) });
   }
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
     return json({ error: '请使用 JSON 格式提交项目情况。' }, 400);

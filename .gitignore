@@ -9,3 +9,4 @@ node_modules/
 build/
 dist/server/
 dist/.openai/
+.local-data/

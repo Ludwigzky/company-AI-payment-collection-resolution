@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794302582179,
+      "tag": "0000_military_nomad",
+      "breakpoints": true
+    }
+  ]
+}

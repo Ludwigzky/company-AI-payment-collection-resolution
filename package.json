@@ -1,16 +1,23 @@
 {
   "name": "enterprise-recovery-demo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/sources.js && node --check src/ai.js && node --check src/api.js && node --check server.mjs",
-    "build": "node scripts/build-worker.mjs"
+    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/sources.js && node --check src/ai.js && node --check src/api.js && node --check src/materials.js && node --check src/records.js && node --check src/workspace-api.js && node --check server.mjs",
+    "build": "node scripts/build-worker.mjs",
+    "db:generate": "drizzle-kit generate --config drizzle.config.js"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "unpdf": "2.1.0"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "drizzle-orm": "0.45.2",
+    "drizzle-kit": "0.31.10"
   }
 }

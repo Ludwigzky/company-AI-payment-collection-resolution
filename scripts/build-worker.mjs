@@ -24,7 +24,8 @@ await build({
   format: 'esm',
   platform: 'browser',
   target: 'es2022',
-  legalComments: 'none',
+  minify: true,
+  legalComments: 'inline',
   logLevel: 'warning',
 });
 await writeFile(path.join(root, 'dist/.openai/hosting.json'), JSON.stringify(hosting, null, 2) + '\n');
