@@ -146,7 +146,7 @@ test('a rejected candidate is not persisted and its audit remains bound to the o
   } });
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(calls, 2);
+  assert.equal(calls, 3, 'an unchanged rejected draft is never re-reviewed to chase a pass');
   assert.equal(payload.plan.generation.mode, 'rules');
   assert.equal(payload.plan.contextAudit.status, 'blocked');
   assert.equal(payload.plan.ai, undefined);

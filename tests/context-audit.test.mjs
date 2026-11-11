@@ -6,7 +6,7 @@ import { buildLegalReview } from '../src/legal-review.js';
 import { CORPUS_VERSION } from '../src/legal-corpus.js';
 import { preflightLegalContext, prepareContextAudit } from '../src/context-audit.js';
 import { prepareMaterials } from '../src/materials.js';
-import { auditRequestContext, auditResponse, isContextAuditRequest, passedAuditPayload, passedAuditResponse } from './helpers/context-audit.mjs';
+import { auditRequestContext, auditResponse, isContextAuditRequest, passedAuditPayload, passedAuditResponse, scopedAuditPayload } from './helpers/context-audit.mjs';
 
 const TODAY = '2026-11-11';
 const KEY = 'audit-test-server-only-secret';
@@ -26,7 +26,8 @@ const base = (input = INPUT, materialsContext) => {
   const plan = generatePlan(input, TODAY);
   return { ...plan, legalReview: buildLegalReview(input, plan, { today: TODAY, materialSummary: materialsContext?.summary ?? [] }) };
 };
-const run = (fetchImpl, extra = {}, input = INPUT) => generateAIPlan(input, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl, ...extra });
+// Single-attempt tests isolate rejection gates; production repair is exercised below.
+const run = (fetchImpl, extra = {}, input = INPUT) => generateAIPlan(input, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl, validationRepairs: 0, auditRepairs: 0, candidateCorrections: 0, ...extra });
 const assertHiddenCandidate = (plan, status, code) => {
   assert.equal(plan.generation.mode, 'rules');
   assert.equal(plan.ai, undefined);
@@ -169,12 +170,12 @@ test('one unsupported candidate prose section blocks publication even when overa
 });
 
 test('a blocked finding or global verdict blocks publication with only server-owned reasons', async () => {
-  for (const change of [(value) => { value.overall = 'blocked'; }, (value) => { value.checks[0].verdict = 'unsupported'; }]) {
+  for (const [change, expected] of [[(value) => { value.overall = 'blocked'; }, 'REVIEW_INVALID'], [(value) => { value.checks[0].verdict = 'unsupported'; }, 'REVIEW_REJECTED']]) {
     const plan = await run(async (_, init) => {
       if (!isContextAuditRequest(init)) return auditResponse(CANDIDATE);
       const value = passedAuditPayload(init); change(value); return auditResponse(value);
     });
-    assertHiddenCandidate(plan, 'blocked', 'REVIEW_REJECTED');
+    assertHiddenCandidate(plan, 'blocked', expected);
   }
 });
 
@@ -200,10 +201,10 @@ test('original selected text and image blocks are independently re-sent and mate
   let calls = 0;
   const incomplete = await run(async () => { calls++; return auditResponse(CANDIDATE); }, { materialsContext });
   assert.equal(calls, 1);
-  assertHiddenCandidate(incomplete, 'blocked', 'REVIEW_INCOMPLETE');
+  assertHiddenCandidate(incomplete, 'blocked', 'DRAFT_INVALID');
   const duplicate = clone(candidate); duplicate.materialFindings.push(duplicate.materialFindings[0]);
   const duplicated = await run(async () => auditResponse(duplicate), { materialsContext });
-  assertHiddenCandidate(duplicated, 'blocked', 'REVIEW_INCOMPLETE');
+  assertHiddenCandidate(duplicated, 'blocked', 'DRAFT_INVALID');
   const unsupported = await run(async (_, init) => {
     if (!isContextAuditRequest(init)) return auditResponse(candidate);
     const value = passedAuditPayload(init); value.sectionChecks.find(({ sectionId }) => sectionId === 'material-1-location').verdict = 'unsupported';
@@ -227,7 +228,7 @@ test('legal templates require source mappings for their own basis and preserve o
   assertHiddenCandidate(failed, 'blocked', 'REVIEW_INVALID');
 });
 
-test('large mandatory review output fails its fixed budget before a second provider request', async () => {
+test('compact scopes fit large reviews without omitting any legal or material checks', async () => {
   const input = { ...INPUT, issueText: '设备存在维修与验收争议，资料需要核对。', issueTypes: ['repair'], projectType: 'equipment' };
   const materialsContext = await prepareMaterials(Array.from({ length: 8 }, (_, index) => ({
     id: `text-${index + 1}`, name: `材料${index + 1}.txt`, mime: 'text/plain', bytes: new TextEncoder().encode('本次可见项目记录，需原件核验。'),
@@ -237,10 +238,43 @@ test('large mandatory review output fails its fixed budget before a second provi
   candidate.recommendations.push({ track: 'legal', sourceIds: ['civil-code'], basisIds: review.findings.filter(({ track }) => track === 'legal').map(({ id }) => id), advice: '整理原件供法务核对。', steps: Array(5).fill('逐项核对本次项目记录与待补原件。') });
   candidate.materialFindings = materialsContext.summary.map(({ id, marker }) => ({ attachmentId: id, finding: `${marker}的可见内容需要原件核对。`, location: '提取段落，原件位置待核。', uncertainty: '内容及原件一致性未经核验。' }));
   let calls = 0;
-  const plan = await run(async () => { calls++; return auditResponse(candidate); }, { materialsContext }, input);
-  assert.equal(calls, 1, 'the expensive fresh review is not attempted when complete output cannot fit');
-  assertHiddenCandidate(plan, 'blocked', 'REVIEW_BUDGET');
-  assert.equal(plan.contextAudit.method, 'deterministic-preflight');
+  const plan = await run(async (_, init) => { calls++; return auditResponse(isContextAuditRequest(init) ? scopedAuditPayload(init) : candidate); }, { materialsContext }, input);
+  assert.equal(calls, 2);
+  assert.equal(plan.contextAudit.status, 'passed');
+  assert.equal(plan.contextAudit.sectionChecks.filter(s => s.sectionId.startsWith('material-')).length, 24);
+  assert.equal(plan.contextAudit.checks.length, plan.legalReview.findings.length);
+  for (const c of plan.contextAudit.checks) {
+    const f = plan.legalReview.findings.find(f => f.id === c.findingId);
+    assert.deepEqual(c.missingEvidence, f.missingEvidence);
+    assert.deepEqual(c.conditions, f.conditions);
+  }
+});
+
+test('scoped transport rejects incomplete acknowledgements, swapped scopes and unsupported content', async t => {
+  for (const [name, change] of [
+    ['missing check', v => v.checks.pop()],
+    ['wrong scope', v => v.checks[0].scopeId = 'g1'],
+    ['unknown scope', v => v.checks[0].scopeId = 'g999'],
+    ['unchecked conditions', v => v.checks[0].conditionsReviewed = false],
+    ['unchecked gaps', v => v.checks[0].evidenceGapsReviewed = false],
+    ['new assertion', v => v.checks[0].rationale = '事实已确认'],
+    ['missing section', v => v.sectionChecks.pop()],
+    ['empty support', v => v.sectionChecks[0].supportIds = []],
+    ['unknown support', v => v.sectionChecks[0].supportIds = ['other-case']],
+    ['status upgrade', v => v.checks[0].status = 'applicable'],
+    ['scope replay', v => v.contextId = 'other-case'],
+  ]) await t.test(name, async () => {
+    const plan = await run(async (_, init) => {
+      if (!isContextAuditRequest(init)) return auditResponse(CANDIDATE);
+      const value = scopedAuditPayload(init); change(value); return auditResponse(value);
+    });
+    assertHiddenCandidate(plan, 'blocked', 'REVIEW_INVALID');
+  });
+  const rejected = await run(async (_, init) => {
+    if (!isContextAuditRequest(init)) return auditResponse(CANDIDATE);
+    const value = scopedAuditPayload(init); value.sectionChecks[0].verdict = 'unsupported'; value.overall = 'blocked'; return auditResponse(value);
+  });
+  assertHiddenCandidate(rejected, 'blocked', 'REVIEW_REJECTED');
 });
 
 test('reviewer transport, invalid JSON and incomplete output never cause retries or candidate leakage', async (t) => {
@@ -289,4 +323,67 @@ test('old or cross-case audit identities and unchanged-draft replay cannot be ac
   assert.notEqual(second.contextAudit.contextId, first.contextAudit.contextId);
   const other = await run(async (_, init) => isContextAuditRequest(init) ? auditResponse(replay) : auditResponse(CANDIDATE), {}, { ...INPUT, amount: 99999, companyName: '另案公司' });
   assertHiddenCandidate(other, 'blocked', 'REVIEW_INVALID');
+});
+
+test('production repairs a draft format once and still requires a complete independent review', async () => {
+  let drafts = 0, audits = 0;
+  const plan = await generateAIPlan(INPUT, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl: async (_, init) => {
+    if (isContextAuditRequest(init)) { audits++; return auditResponse(scopedAuditPayload(init)); }
+    drafts++;
+    if (drafts === 1) return auditResponse({ ...CANDIDATE, recommendations: [] });
+    assert.match(JSON.parse(init.body).messages[0].content, /候选格式自检未通过/);
+    return auditResponse(CANDIDATE);
+  } });
+  assert.equal(drafts, 2); assert.equal(audits, 1);
+  assert.equal(plan.contextAudit.status, 'passed');
+  assert.equal(plan.generation.draftAttempts, 2);
+});
+
+test('production repairs inconsistent review formatting without accepting its first verdict', async () => {
+  let audits = 0;
+  const plan = await generateAIPlan(INPUT, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl: async (_, init) => {
+    if (!isContextAuditRequest(init)) return auditResponse(CANDIDATE);
+    const v = scopedAuditPayload(init); audits++;
+    if (audits === 1) v.overall = 'blocked';
+    else assert.match(JSON.parse(init.body).messages[0].content, /上一次响应未通过协议核验/);
+    return auditResponse(v);
+  } });
+  assert.equal(audits, 2);
+  assert.equal(plan.contextAudit.status, 'passed');
+});
+
+test('a semantic repair changes the candidate and rechecks every section with a new identity', async () => {
+  let drafts = 0, audits = 0; const ids = [];
+  const plan = await generateAIPlan(INPUT, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl: async (_, init) => {
+    if (!isContextAuditRequest(init)) {
+      drafts++;
+      if (drafts === 2) assert.match(init.body, /unsupportedSections/);
+      return auditResponse({ ...CANDIDATE, analysis: drafts === 1 ? '填报款项需要核对原始记录。' : '根据本案填报，请逐项核对合同付款条件与银行原始记录。' });
+    }
+    audits++; const ctx = auditRequestContext(init); ids.push(ctx.contextId);
+    const v = scopedAuditPayload(init);
+    if (audits === 1) { v.overall = 'blocked'; v.sectionChecks[0].verdict = 'unsupported'; }
+    return auditResponse(v);
+  } });
+  assert.equal(drafts, 2); assert.equal(audits, 2);
+  assert.notEqual(ids[0], ids[1]);
+  assert.equal(plan.contextAudit.status, 'passed');
+  assert.equal(plan.ai.analysis, '根据本案填报，请逐项核对合同付款条件与银行原始记录。');
+});
+
+test('continuing rejection and format failures stop at four calls without exposing candidate text', async () => {
+  for (const malformed of [false, true]) {
+    let calls = 0;
+    const plan = await generateAIPlan(INPUT, { DEEPSEEK_API_KEY: KEY }, { today: TODAY, fetchImpl: async (_, init) => {
+      calls++;
+      if (!isContextAuditRequest(init)) return auditResponse(CANDIDATE);
+      const v = scopedAuditPayload(init);
+      if (malformed) v.extra = 'unapproved';
+      else { v.overall = 'blocked'; v.sectionChecks[0].verdict = 'unsupported'; }
+      return auditResponse(v);
+    } });
+    assert.ok(calls <= 4);
+    assert.equal(plan.generation.mode, 'rules'); assert.equal(plan.ai, undefined);
+    assert.equal(plan.contextAudit.status, 'blocked');
+  }
 });

@@ -90,7 +90,15 @@ function candidateSections(candidate, review, directory) {
     const basis = (recommendation.basisIds ?? []).map((id) => review.findings.find((finding) => finding.id === id));
     const mapping = basis.length ? { requiredFactIds: [...new Set(basis.flatMap(({ factIds }) => factIds))], requiredClauseIds: [...new Set(basis.flatMap(({ citations }) => citations.map(({ id }) => id)))] } : {};
     sections.push({ sectionId: `recommendation-${index + 1}-advice`, text: recommendation.advice, ...mapping });
-    recommendation.steps.forEach((text, step) => sections.push({ sectionId: `recommendation-${index + 1}-step-${step + 1}`, text, ...mapping }));
+    recommendation.steps.forEach((text, step) => {
+      const origins = basis.filter(f => f.missingEvidence.includes(text));
+      const stepMapping = basis.length ? {
+        requiredFactIds: [...new Set(origins.flatMap(f => f.factIds))],
+        requiredClauseIds: [...new Set(origins.flatMap(f => f.citations.map(c => c.id)))],
+      } : {};
+      if (basis.length && !origins.length) fail('REVIEW_CONTEXT_INVALID');
+      sections.push({ sectionId: `recommendation-${index + 1}-step-${step + 1}`, text, ...stepMapping });
+    });
   }
   candidate.followUpQuestions.forEach((text, index) => sections.push({ sectionId: `question-${index + 1}`, text }));
   sections.push({ sectionId: 'communicationDraft', text: candidate.communicationDraft });
@@ -108,6 +116,41 @@ async function digest(value) {
   return `sha256-${[...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
+// Compact references acknowledge complete server-owned scopes, not abbreviated
+// evidence. Every scope is expanded before the original strict validator runs.
+function auditScopes(review, clauses) {
+  return [
+    ...review.facts.map((f, i) => ({ id: `f${i}`, factIds: [f.id], clauseIds: [] })),
+    ...[...clauses.keys()].map((id, i) => ({ id: `c${i}`, factIds: [], clauseIds: [id] })),
+    ...review.findings.map((f, i) => ({ id: `g${i}`, findingId: f.id, status: f.status,
+      factIds: f.factIds, clauseIds: f.citations.map(c => c.id),
+      conditionIndices: f.conditions.map((_, i) => i), evidenceGapIndices: f.missingEvidence.map((_, i) => i) })),
+  ];
+}
+
+function expandScopedAudit(value, prepared) {
+  exactKeys(value, ['wireVersion', 'contextId', 'candidateDigest', 'overall', 'checks', 'sectionChecks']);
+  if (value.wireVersion !== 'scoped-v2' || !Array.isArray(value.checks) || !Array.isArray(value.sectionChecks)) fail();
+  const byId = new Map(prepared.scopes.map(s => [s.id, s]));
+  const checks = value.checks.map(check => {
+    exactKeys(check, ['findingId', 'scopeId', 'status', 'verdict', 'conditionsReviewed', 'evidenceGapsReviewed', 'reasonCodes']);
+    const scope = byId.get(check.scopeId);
+    if (!scope?.findingId || scope.findingId !== check.findingId || scope.status !== check.status
+      || check.conditionsReviewed !== true || check.evidenceGapsReviewed !== true) fail();
+    return { findingId: check.findingId, status: check.status, verdict: check.verdict,
+      factIds: scope.factIds, clauseIds: scope.clauseIds, conditionIndices: scope.conditionIndices,
+      evidenceGapIndices: scope.evidenceGapIndices, reasonCodes: check.reasonCodes };
+  });
+  const sectionChecks = value.sectionChecks.map(section => {
+    exactKeys(section, ['sectionId', 'verdict', 'supportIds']);
+    if (!unique(section.supportIds) || !section.supportIds.length) fail();
+    const scopes = section.supportIds.map(id => { const s = byId.get(id); if (!s) fail(); return s; });
+    return { sectionId: section.sectionId, verdict: section.verdict,
+      factIds: [...new Set(scopes.flatMap(s => s.factIds))], clauseIds: [...new Set(scopes.flatMap(s => s.clauseIds))] };
+  });
+  return { contextId: value.contextId, candidateDigest: value.candidateDigest, overall: value.overall, checks, sectionChecks };
+}
+
 export async function prepareContextAudit(input, basePlan, candidate, materialsContext) {
   const trusted = preflightLegalContext(input, basePlan, materialsContext);
   const directory = materialsContext?.summary ?? [];
@@ -116,25 +159,29 @@ export async function prepareContextAudit(input, basePlan, candidate, materialsC
   const sections = candidateSections(candidate, trusted.review, directory);
   const candidateDigest = await digest(candidate);
   const contextId = await digest({ requestNonce: crypto.randomUUID(), input, review: trusted.review, materialDirectory: directory, materialBlocks: materialsContext?.content ?? [], candidate });
-  const requiredOutput = {
-    contextId, candidateDigest, overall: 'passed',
-    checks: trusted.review.findings.map((finding) => ({
-      findingId: finding.id, status: finding.status, verdict: 'supported', factIds: finding.factIds,
-      clauseIds: finding.citations.map(({ id }) => id), conditionIndices: finding.conditions.map((_, index) => index),
-      evidenceGapIndices: finding.missingEvidence.map((_, index) => index),
-      reasonCodes: ['reported_facts_unverified', 'conditions_require_evidence', 'version_scope_limited', ...(finding.status === 'not_applicable' ? ['excluded_on_reported_facts'] : [])],
-    })),
-    sectionChecks: sections.map(({ sectionId, requiredFactIds, requiredClauseIds }) => ({
-      sectionId, verdict: 'supported', factIds: requiredFactIds?.length ? requiredFactIds : ['fact-issueText'], clauseIds: requiredClauseIds ?? [],
-    })),
+  const scopes = auditScopes(trusted.review, trusted.clauses);
+  for (const section of sections) {
+    const requiredFacts = section.requiredFactIds ?? [], requiredClauses = section.requiredClauseIds ?? [];
+    // Reference all and only the source scopes that actually produced a
+    // templated legal segment; a material segment references its own inventory.
+    section.requiredSupportIds = scopes.filter(s => s.findingId && requiredClauses.length
+      && s.factIds.every(id => requiredFacts.includes(id)) && s.clauseIds.every(id => requiredClauses.includes(id))).map(s => s.id);
+    if (!section.requiredSupportIds.length) section.requiredSupportIds = scopes.filter(s => !s.findingId && s.factIds.length && requiredFacts.includes(s.factIds[0])).map(s => s.id);
+  }
+  const wireShape = {
+    wireVersion: 'scoped-v2', contextId, candidateDigest, overall: 'passed|blocked',
+    checks: trusted.review.findings.map((f, i) => ({ findingId: f.id, scopeId: `g${i}`, status: f.status,
+      verdict: 'supported|unsupported', conditionsReviewed: 'true|false', evidenceGapsReviewed: 'true|false',
+      reasonCodes: ['reported_facts_unverified', 'conditions_require_evidence', 'version_scope_limited', ...(f.status === 'not_applicable' ? ['excluded_on_reported_facts'] : [])] })),
+    sectionChecks: sections.map(s => ({ sectionId: s.sectionId, verdict: 'supported|unsupported', supportIds: ['choose_support_scope_ids'] })),
   };
-  if (JSON.stringify(requiredOutput).length > MAX_REQUIRED_OUTPUT_CHARACTERS) fail('REVIEW_BUDGET');
+  if (JSON.stringify(wireShape).length > MAX_REQUIRED_OUTPUT_CHARACTERS) fail('REVIEW_BUDGET');
   const legalContext = {
     ...trusted.review,
     clauses: [...trusted.clauses.values()],
     findings: trusted.review.findings.map(({ citations, ...finding }) => ({ ...finding, clauseIds: citations.map(({ id }) => id) })),
   };
-  const context = { contextId, candidateDigest, legalContext, materialDirectory: directory, candidate, sections };
+  const context = { contextId, candidateDigest, legalContext, materialDirectory: directory, candidate, sections, supportScopes: scopes, responseShape: wireShape };
   const text = JSON.stringify(context);
   const materialText = (materialsContext?.content ?? []).filter((block) => block.type === 'text').reduce((sum, block) => sum + block.text.length, 0);
   const materialBytes = materialsContext?.totalBytes ?? 0;
@@ -146,17 +193,22 @@ export async function prepareContextAudit(input, basePlan, candidate, materialsC
     '法律只能来自legalContext.clauses完整官方原文和版本；核对各finding事实、条件、证据缺口、日期适用局限和候选basisIds。不得依靠记忆增补其他法条或来源。not_applicable不得推荐，insufficient只能补资料及专业核验，conditional仍未经证明。不得修改或提升任何finding的status，不得省略任何必要证据缺口。',
     '每个finding独立核对本案事实、法条条件、证据缺口及版本局限，再输出结构化reasonCodes和索引。不要输出自由文字解释、内部思维过程、候选修订、URL、法条原文或密钥；对用户展示的适用性说明由系统从原始核查快照生成，模型没有撰写新增事实或法律意见的权限。',
     '任何一处不受支持、来源缺失、无法核验的具体识别断言、遗漏关键限制或越过既有法律状态，overall必须blocked；对应verdict为unsupported。正常保留不确定性、提出核验任务不等于断言事实。图像或提取内容无法支持时不能猜测。审核通过不是确认材料真实或法律已适用。',
-    '严格结构且不添加字段：{contextId,candidateDigest,overall:"passed"或"blocked",checks:[{findingId,status,verdict:"supported"或"unsupported",factIds,clauseIds,conditionIndices,evidenceGapIndices,reasonCodes}],sectionChecks:[{sectionId,verdict:"supported"或"unsupported",factIds,clauseIds}]}。',
-    'contextId和candidateDigest原样回传。checks必须每个原finding恰好一项，status、factIds和clauseIds与该finding原样一致，conditionIndices及evidenceGapIndices完整列出该finding.conditions和missingEvidence的所有从0开始索引。reasonCodes为非空去重数组，只能选择reported_facts_unverified、conditions_require_evidence、version_scope_limited、excluded_on_reported_facts；前两个必须保留，not_applicable还必须含excluded_on_reported_facts。sectionChecks必须每个sectionId恰好一项，factIds/clauseIds只用该上下文中支持该段内容的固定ID，每项factIds至少一个；必须包含sections给出的全部requiredFactIds和requiredClauseIds。每个具体事实和法律主张应有映射；无法提供支持则判unsupported。全部verdict为supported才能passed。',
+    '区分审核对象：本次判断候选文字是否忠于资料且保留限制，不判断企业能否胜诉、是否已获确权或证据是否真实。原finding为insufficient或conditional时，若候选仅提出补证核查且未提升状态，该段可以supported。conditionsReviewed=true表示已经逐项审阅条件，不表示条件已经满足；evidenceGapsReviewed=true表示已逐项保留缺口，不表示证据已补齐。',
+    'overall必须与逐项判断一致：只要任一verdict为unsupported则blocked；全部supported且每项条件和缺口已完整审核则passed。如有额外疑问，必须落实到对应finding或section并判unsupported，不得全部supported却给blocked，也不得无依据判supported。',
+    '使用responseShape所示scoped-v2结构，overall只能为passed或blocked。所有占位值必须改为实际审核判断；不照抄占位字符串。只返回JSON，不添加字段。',
+    '精确输出结构如下（字段名不作同义改写，true|false须替换为实际布尔值；所有占位值须改成独立审核后的判断；必须返回所有项）：' + JSON.stringify(wireShape),
+    'contextId和candidateDigest原样回传。checks每个finding恰好一项，scopeId必须选对应g编号，status原样保持。conditionsReviewed及evidenceGapsReviewed必须是JSON布尔值，只有已逐条检查该scope全部条件和缺口才为true；不能只检查标题。scope绑定完整原始事实、条文、条件和证据缺口，系统会展开并逐项核验，不需要反复抄写长编号。reasonCodes只能选择所示四个固定值，前两个必须保留，not_applicable必须额外含excluded_on_reported_facts。',
+    'sectionChecks必须每个sectionId恰好一项，supportIds从supportScopes选取，g编号引用该项完整法律依据链，f编号引用本案事实，c编号引用条文。优先原样列入section.requiredSupportIds（如有），再补充其他必要依据；避免重复抄写已被g编号包含的f和c编号。必须覆盖该section全部requiredFactIds和requiredClauseIds，并至少支持一个案件事实；材料段必须引用其对应材料清单事实。所有自由文字都须审查，任何段落不受支持则判unsupported。只有全部段落、全部核对项supported，且全部条件缺口已审查，overall才能passed。不得以套用scope代替核对候选文字与原始材料。',
     '输出紧凑JSON，不添加格式空白，不超过8000 tokens；不展开长篇分析，不输出候选修订版、法律原文、自由链接、附加字段或隐含思维过程。',
   ].join('\n');
   return {
-    ...trusted, contextId, candidateDigest, sections,
+    ...trusted, contextId, candidateDigest, sections, scopes,
     messages: [{ role: 'system', content: system }, { role: 'user', content: directory.length ? [{ type: 'text', text }, ...materialsContext.content] : text }],
   };
 }
 
 export function validateContextAudit(value, prepared) {
+  if (value?.wireVersion !== undefined) value = expandScopedAudit(value, prepared);
   exactKeys(value, ['contextId', 'candidateDigest', 'overall', 'checks', 'sectionChecks']);
   if (value.contextId !== prepared.contextId || value.candidateDigest !== prepared.candidateDigest) fail();
   if (!['passed', 'blocked'].includes(value.overall) || !Array.isArray(value.checks) || !Array.isArray(value.sectionChecks)) fail();
@@ -188,6 +240,7 @@ export function validateContextAudit(value, prepared) {
       || !requiredFactIds.every((id) => section.factIds.includes(id)) || !requiredClauseIds.every((id) => section.clauseIds.includes(id))) fail();
     return { sectionId, status: 'passed', factIds: [...section.factIds], clauseIds: [...section.clauseIds] };
   });
+  if (value.overall === 'blocked' && value.checks.every(c => c.verdict === 'supported') && value.sectionChecks.every(c => c.verdict === 'supported')) fail('REVIEW_INVALID');
   if (value.overall !== 'passed' || value.checks.some(({ verdict }) => verdict !== 'supported')
     || value.sectionChecks.some(({ verdict }) => verdict !== 'supported')) fail('REVIEW_REJECTED');
   return contextAuditResult(prepared.review, { status: 'passed', method: METHOD,

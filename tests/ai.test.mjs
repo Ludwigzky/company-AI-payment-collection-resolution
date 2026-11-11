@@ -33,7 +33,7 @@ const upstream = (advice = ADVICE, extras = {}) => new Response(JSON.stringify({
 // These original guards exercise the draft independently; review behavior and
 // the actual two-call transport are tested in context-audit.test.mjs.
 const generate = (fetchImpl, options = {}, input = INPUT, env = ENV) => generateAIPlan(input, env, {
-  fetchImpl: (url, init) => isContextAuditRequest(init) ? passedAuditResponse(init) : fetchImpl(url, init), today: TODAY, ...options,
+  fetchImpl: (url, init) => isContextAuditRequest(init) ? passedAuditResponse(init) : fetchImpl(url, init), today: TODAY, validationRepairs: 0, auditRepairs: 0, candidateCorrections: 0, ...options,
 });
 const assertRules = (plan) => {
   assert.equal(plan.generation.mode, 'rules');

@@ -25,3 +25,15 @@ export function auditResponse(payload) {
   return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(payload) } }] }), { headers: { 'Content-Type': 'application/json' } });
 }
 export function passedAuditResponse(init) { return auditResponse(passedAuditPayload(init)); }
+
+export function scopedAuditPayload(init) {
+  const context = auditRequestContext(init), expanded = passedAuditPayload(init);
+  return {
+    wireVersion: 'scoped-v2', contextId: context.contextId, candidateDigest: context.candidateDigest, overall: 'passed',
+    checks: expanded.checks.map(c => ({ findingId: c.findingId,
+      scopeId: context.supportScopes.find(s => s.findingId === c.findingId).id, status: c.status,
+      verdict: c.verdict, conditionsReviewed: true, evidenceGapsReviewed: true, reasonCodes: c.reasonCodes })),
+    sectionChecks: context.sections.map(s => ({ sectionId: s.sectionId, verdict: 'supported',
+      supportIds: s.requiredSupportIds.length ? s.requiredSupportIds : [context.supportScopes.find(ref => ref.factIds.includes('fact-issueText')).id] })),
+  };
+}
