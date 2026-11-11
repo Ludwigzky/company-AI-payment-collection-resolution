@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleAPI } from '../src/api.js';
+import { isContextAuditRequest, passedAuditResponse } from './helpers/context-audit.mjs';
 
 const ORIGIN = 'https://private.example.test';
 const ENV = { DEEPSEEK_API_KEY: 'api-server-secret' };
@@ -49,13 +50,15 @@ test('POST forwards only case input and returns a validated AI supplement', asyn
       assert.equal(url, 'https://api.deepseek.com/chat/completions');
       assert.equal(JSON.parse(init.body).model, 'deepseek-flash');
       assert.doesNotMatch(init.body, /hacked|evil\.invalid|client-secret/);
+      if (isContextAuditRequest(init)) return passedAuditResponse(init);
       return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(ADVICE), reasoning_content: 'hidden' } }] }));
     },
   });
   assert.equal(response.status, 200);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   const body = await response.json();
   assert.equal(body.plan.generation.mode, 'ai');
+  assert.equal(body.plan.contextAudit.status, 'passed');
   assert.deepEqual(body.plan.ai, ADVICE);
   assert.equal(body.plan.amount, INPUT.amount);
   assert.doesNotMatch(JSON.stringify(body), /api-server-secret|Authorization|reasoning_content|hidden/);

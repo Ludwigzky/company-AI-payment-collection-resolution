@@ -2,6 +2,7 @@ import { generatePlan } from '../dist/engine.js';
 import { SOURCES } from '../dist/sources.js';
 import { isPreparedMaterials } from './materials.js';
 import { buildLegalReview } from './legal-review.js';
+import { ContextAuditError, CONTEXT_AUDIT_METHOD, CONTEXT_AUDIT_MAX_TOKENS, contextAuditResult, preflightLegalContext, prepareContextAudit, validateContextAudit } from './context-audit.js';
 
 const ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEFAULT_MODEL = 'deepseek-flash';
@@ -17,6 +18,7 @@ const REASONS = Object.freeze({
   busy: 'AI 服务当前繁忙，已生成规则方案，请稍后再试。',
   timeout: 'AI 响应超时，已生成规则方案。',
   invalid: 'AI 结果未通过校验，已生成规则方案。',
+  audit: 'AI 独立上下文审核未完成或未通过，已生成规则方案，请人工复核。',
 });
 let activeCalls = 0;
 
@@ -268,9 +270,11 @@ export async function generateAIPlan(input, env = {}, options = {}) {
   if (materialsContext?.summary.length) basePlan = { ...basePlan, materialSummary: materialsContext.summary };
   basePlan = { ...basePlan, legalReview: buildLegalReview(cleanInput, basePlan, { today: basePlan.generatedAt, materialSummary: materialsContext?.summary ?? [] }) };
   const { key, model } = getAIConfiguration(env);
-  const fallback = (reason) => ({ ...basePlan, generation: { mode: 'rules', provider: 'DeepSeek', model, reason } });
-  if (!key) return fallback(REASONS.missing);
-  if (activeCalls >= 2) return fallback(REASONS.busy);
+  const fallback = (reason, audit = {}) => ({ ...basePlan, contextAudit: contextAuditResult(basePlan.legalReview, audit), generation: { mode: 'rules', provider: 'DeepSeek', model, reason } });
+  try { preflightLegalContext(cleanInput, basePlan, materialsContext); }
+  catch (error) { return fallback(REASONS.audit, { status: 'blocked', method: 'deterministic-preflight', code: error instanceof ContextAuditError ? error.code : 'REVIEW_CONTEXT_INVALID' }); }
+  if (!key) return fallback(REASONS.missing, { method: 'deterministic-preflight' });
+  if (activeCalls >= 2) return fallback(REASONS.busy, { status: 'unavailable', code: 'DRAFT_UNAVAILABLE' });
 
   const controller = new AbortController();
   const suppliedTimeout = options.timeoutMs;
@@ -279,6 +283,7 @@ export async function generateAIPlan(input, env = {}, options = {}) {
   let timer;
   let timedOut = false;
   let stage = 'request';
+  let preparedAudit;
   activeCalls += 1;
   try {
     const timeout = new Promise((_, reject) => {
@@ -300,7 +305,7 @@ export async function generateAIPlan(input, env = {}, options = {}) {
         // Do not read or expose upstream errors: they may contain credentials,
         // account details, request data or provider diagnostics.
         if (response.body) void response.body.cancel().catch(() => {});
-        return fallback(response.status === 429 ? REASONS.busy : REASONS.unavailable);
+        return fallback(response.status === 429 ? REASONS.busy : REASONS.unavailable, { status: 'unavailable', code: 'DRAFT_UNAVAILABLE' });
       }
       stage = 'validation';
       const payload = await readUpstream(response);
@@ -308,14 +313,44 @@ export async function generateAIPlan(input, env = {}, options = {}) {
       if (choice?.finish_reason !== 'stop' || typeof choice?.message?.content !== 'string') throw new Error('incomplete');
       const ai = validateAI(JSON.parse(choice.message.content), basePlan, materialsContext);
       if (JSON.stringify(ai).includes(key)) throw new Error('credential');
-      return { ...basePlan, generation: { mode: 'ai', provider: 'DeepSeek', model }, ai };
+      stage = 'audit-preflight';
+      preparedAudit = await prepareContextAudit(cleanInput, basePlan, ai, materialsContext);
+      // A timeout may have won the race during asynchronous hashing. Never
+      // start the second billable request after the shared budget expired.
+      if (controller.signal.aborted) throw new Error('timeout');
+      stage = 'audit-request';
+      const reviewResponse = await (options.fetchImpl ?? fetch)(ENDPOINT, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model, messages: preparedAudit.messages, thinking: { type: 'disabled' },
+          response_format: { type: 'json_object' }, max_tokens: CONTEXT_AUDIT_MAX_TOKENS, stream: false }),
+        signal: controller.signal, redirect: 'manual',
+      });
+      if (!reviewResponse.ok) {
+        if (reviewResponse.body) void reviewResponse.body.cancel().catch(() => {});
+        return fallback(REASONS.audit, { status: 'unavailable', method: CONTEXT_AUDIT_METHOD, code: 'REVIEW_UNAVAILABLE', ...auditIdentity() });
+      }
+      stage = 'audit-validation';
+      const reviewPayload = await readUpstream(reviewResponse);
+      const reviewedChoice = reviewPayload?.choices?.[0];
+      if (reviewedChoice?.finish_reason !== 'stop' || typeof reviewedChoice?.message?.content !== 'string') throw new ContextAuditError('REVIEW_INVALID');
+      const contextAudit = validateContextAudit(JSON.parse(reviewedChoice.message.content), preparedAudit);
+      return { ...basePlan, generation: { mode: 'ai', provider: 'DeepSeek', model }, ai, contextAudit };
     })();
     return await Promise.race([operation, timeout]);
-  } catch {
-    return fallback(timedOut ? REASONS.timeout : stage === 'validation' ? REASONS.invalid : REASONS.unavailable);
+  } catch (error) {
+    if (stage.startsWith('audit')) return fallback(REASONS.audit, {
+      status: timedOut || stage === 'audit-request' ? 'unavailable' : 'blocked',
+      method: preparedAudit ? CONTEXT_AUDIT_METHOD : 'deterministic-preflight', ...auditIdentity(),
+      code: timedOut ? 'REVIEW_TIMEOUT' : error instanceof ContextAuditError ? error.code : stage === 'audit-request' ? 'REVIEW_UNAVAILABLE' : 'REVIEW_INVALID',
+    });
+    return fallback(timedOut ? REASONS.timeout : stage === 'validation' ? REASONS.invalid : REASONS.unavailable,
+      { status: stage === 'validation' && !timedOut ? 'blocked' : 'unavailable', code: stage === 'validation' && !timedOut ? 'DRAFT_INVALID' : 'DRAFT_UNAVAILABLE' });
   } finally {
     clearTimeout(timer);
     controller.abort();
     activeCalls -= 1;
+  }
+  function auditIdentity() {
+    return preparedAudit ? { contextId: preparedAudit.contextId, candidateDigest: preparedAudit.candidateDigest } : {};
   }
 }

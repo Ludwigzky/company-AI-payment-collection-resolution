@@ -7,7 +7,7 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/sources.js && node --check src/ai.js && node --check src/api.js && node --check src/materials.js && node --check src/records.js && node --check src/workspace-api.js && node --check server.mjs",
+    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/sources.js && node --check src/ai.js && node --check src/context-audit.js && node --check src/api.js && node --check src/materials.js && node --check src/records.js && node --check src/workspace-api.js && node --check server.mjs",
     "build": "node scripts/build-worker.mjs",
     "db:generate": "drizzle-kit generate --config drizzle.config.js"
   },

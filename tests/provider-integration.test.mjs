@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { isContextAuditRequest, passedAuditResponse } from './helpers/context-audit.mjs';
 import { createLocalStorage } from '../src/local-storage.mjs';
 import { handleAPI } from '../src/api.js';
 
@@ -34,11 +35,12 @@ test('saved account credentials and model are used by the real case analysis rou
     assert.equal(url, 'https://api.deepseek.com/chat/completions');
     assert.ok(init.headers.Authorization === 'Bearer ' + SAVED_KEY, 'only this account credential is forwarded');
     assert.equal(JSON.parse(init.body).model, 'deepseek-v4-pro');
+    if (isContextAuditRequest(init)) return passedAuditResponse(init);
     return upstream();
   } });
   assert.equal(analysis.status, 200);
   assert.equal((await analysis.json()).plan.generation.mode, 'ai');
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.ok(env.DEEPSEEK_API_KEY === DEFAULT_KEY, 'the shared default environment remains unchanged');
   const other = await (await call(env, '/provider', { owner: 'bob' })).json();
   assert.equal(other.source, 'environment');

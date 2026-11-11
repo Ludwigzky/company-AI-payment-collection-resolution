@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { isContextAuditRequest, passedAuditResponse, passedAuditPayload, auditResponse } from './helpers/context-audit.mjs';
 import { handleAPI } from '../src/api.js';
 import { createLocalStorage } from '../src/local-storage.mjs';
 
@@ -19,8 +20,11 @@ async function upload(env, id, text, owner = 'alice', name = '同名项目材料
   const form = new FormData(); form.set('file', new File([text], name, { type: 'text/plain' }));
   return call(env, `/records/${id}/attachments`, { owner, method: 'POST', body: form });
 }
-function providerResponse() {
-  return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ analysis: '根据本次案件已提交的材料，建议核对合同履约及金额，保留待确认事项。', strategy: '先整理对账与项目清单，再协商书面安排。', recommendations: [{ track: 'business', advice: '逐项确认款项与材料。', steps: ['核查交付资料并向对方申请书面确认。'], sourceIds: ['civil-code'] }], followUpQuestions: ['是否有双方确认的对账记录？'], communicationDraft: '请协助核对本项目资料和款项，书面反馈可以确认的支付安排。' }) } }] }));
+function providerResponse(init) {
+  const content = init ? JSON.parse(init.body).messages[1].content : null;
+  const context = Array.isArray(content) ? JSON.parse(content[0].text.slice(content[0].text.indexOf('{'))) : {};
+  const materialFindings = (context.materialDirectory || []).map((item) => ({ attachmentId: item.id, finding: item.marker + '本次可见文字提供项目事项线索，需核对原件及付款条件。', location: 'TXT提取内容', uncertainty: '提取内容不能证明真实，需核对原件。' }));
+  return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ analysis: '根据本次案件已提交的材料，建议核对合同履约及金额，保留待确认事项。', strategy: '先整理对账与项目清单，再协商书面安排。', recommendations: [{ track: 'business', advice: '逐项确认款项与材料。', steps: ['核查交付资料并向对方申请书面确认。'], sourceIds: ['civil-code'] }], followUpQuestions: ['是否有双方确认的对账记录？'], communicationDraft: '请协助核对本项目资料和款项，书面反馈可以确认的支付安排。', ...(materialFindings.length ? { materialFindings } : {}) }) } }] }));
 }
 
 test('case endpoints require a trusted identity and isolate cases between users', async (t) => {
@@ -79,14 +83,16 @@ test('analysis resolves only current-case file IDs and never forwards another ca
     calls += 1;
     const content = JSON.stringify(JSON.parse(init.body).messages);
     assert.match(content, /ALPHA-ONLY/); assert.doesNotMatch(content, /BETA-ONLY/);
-    return providerResponse();
+    if (isContextAuditRequest(init)) return passedAuditResponse(init);
+    return providerResponse(init);
   } };
   const rejected = await call(env, `/records/${a.id}/analyze`, { method: 'POST', body: { revision: ua.record.revision, attachmentIds: [ub.attachment.id] } }, ai);
   assert.equal(rejected.status, 404); assert.equal(calls, 0);
   const response = await call(env, `/records/${a.id}/analyze`, { method: 'POST', body: { revision: ua.record.revision, attachmentIds: [ua.attachment.id] } }, ai);
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(calls, 1); assert.equal(payload.plan.generation.mode, 'ai');
+  assert.equal(calls, 2); assert.equal(payload.plan.generation.mode, 'ai');
+  assert.equal(payload.plan.contextAudit.status, 'passed');
   assert.equal(payload.run.recordId, a.id);
   assert.deepEqual(payload.run.attachmentIds, [ua.attachment.id]);
   assert.equal(payload.record.runs.length, 1);
@@ -94,6 +100,7 @@ test('analysis resolves only current-case file IDs and never forwards another ca
   assert.deepEqual(payload.run.plan.legalReview, payload.plan.legalReview);
   const reloaded = (await (await call(env, '/records/' + a.id)).json()).record;
   assert.deepEqual(reloaded.runs[0].plan.legalReview, payload.plan.legalReview, 'law text and version survive a stored snapshot reload');
+  assert.deepEqual(reloaded.runs[0].plan.contextAudit, payload.plan.contextAudit, 'context audit survives a stored snapshot reload');
   assert.doesNotMatch(JSON.stringify(reloaded.runs[0].plan.legalReview), /BETA-ONLY/);
   assert.equal((await (await call(env, '/records/' + b.id)).json()).record.runs.length, 0);
 });
@@ -104,7 +111,7 @@ test('an in-flight result archives its original snapshot without overwriting lat
   let release; let started;
   const atProvider = new Promise((resolve) => { started = resolve; });
   const responseGate = new Promise((resolve) => { release = resolve; });
-  const work = call(env, `/records/${record.id}/analyze`, { method: 'POST', body: { revision: record.revision, attachmentIds: [] } }, { fetchImpl: async () => { started(); await responseGate; return providerResponse(); }, today: '2026-11-10' });
+  const work = call(env, `/records/${record.id}/analyze`, { method: 'POST', body: { revision: record.revision, attachmentIds: [] } }, { fetchImpl: async (_url, init) => { if (isContextAuditRequest(init)) { assert.match(init.body, /35000/); assert.doesNotMatch(init.body, /99000/); return passedAuditResponse(init); } started(); await responseGate; return providerResponse(); }, today: '2026-11-10' });
   await atProvider;
   const edit = await call(env, '/records/' + record.id, { method: 'PATCH', body: { revision: record.revision, input: { ...baseInput, amount: 99000 } } });
   assert.equal(edit.status, 200);
@@ -114,6 +121,59 @@ test('an in-flight result archives its original snapshot without overwriting lat
   assert.equal(result.record.input.amount, 99000); assert.equal(result.run.recordId, record.id);
   assert.match(JSON.stringify(result.run.plan.legalReview.facts), /35000/);
   assert.doesNotMatch(JSON.stringify(result.run.plan.legalReview.facts), /99000/);
+  assert.equal(result.run.plan.contextAudit.status, 'passed');
+});
+
+test('a rejected candidate is not persisted and its audit remains bound to the original case', async (t) => {
+  const env = { ...await setup(t), DEEPSEEK_API_KEY: 'mock-provider-key' };
+  const record = await create(env, '拒绝候选的虚构案件');
+  const other = await create(env, '不受影响的虚构案件');
+  const sentinel = '本段候选内容只用于拒绝回写测试，不能出现在保存的方案中。';
+  let calls = 0;
+  const response = await call(env, `/records/${record.id}/analyze`, { method: 'POST', body: { revision: record.revision, attachmentIds: [] } }, { today: '2026-11-10', fetchImpl: async (_url, init) => {
+    calls++;
+    if (isContextAuditRequest(init)) {
+      const rejected = passedAuditPayload(init);
+      rejected.overall = 'blocked';
+      rejected.sectionChecks.find(({ sectionId }) => sectionId === 'analysis').verdict = 'unsupported';
+      return auditResponse(rejected);
+    }
+    const envelope = await providerResponse().json();
+    const candidate = JSON.parse(envelope.choices[0].message.content);
+    candidate.analysis = sentinel;
+    envelope.choices[0].message.content = JSON.stringify(candidate);
+    return new Response(JSON.stringify(envelope));
+  } });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(calls, 2);
+  assert.equal(payload.plan.generation.mode, 'rules');
+  assert.equal(payload.plan.contextAudit.status, 'blocked');
+  assert.equal(payload.plan.ai, undefined);
+  assert.equal(JSON.stringify(payload).includes(sentinel), false);
+  const reloaded = (await (await call(env, '/records/' + record.id)).json()).record;
+  assert.deepEqual(reloaded.runs[0].plan.contextAudit, payload.plan.contextAudit);
+  assert.equal(JSON.stringify(reloaded).includes(sentinel), false);
+  assert.equal((await (await call(env, '/records/' + other.id)).json()).record.runs.length, 0);
+});
+
+test('an audit reply cannot be replayed between cases even with identical input and candidate', async (t) => {
+  const env = { ...await setup(t), DEEPSEEK_API_KEY: 'mock-provider-key' };
+  const a = await create(env, '同案情A'); const b = await create(env, '同案情B');
+  let previousAudit;
+  const options = { today: '2026-11-10', fetchImpl: async (_url, init) => {
+    if (!isContextAuditRequest(init)) return providerResponse();
+    if (previousAudit) return auditResponse(previousAudit);
+    previousAudit = passedAuditPayload(init);
+    return auditResponse(previousAudit);
+  } };
+  const first = await (await call(env, `/records/${a.id}/analyze`, { method: 'POST', body: { revision: a.revision, attachmentIds: [] } }, options)).json();
+  assert.equal(first.plan.contextAudit.status, 'passed');
+  const second = await (await call(env, `/records/${b.id}/analyze`, { method: 'POST', body: { revision: b.revision, attachmentIds: [] } }, options)).json();
+  assert.equal(second.plan.contextAudit.status, 'blocked');
+  assert.equal(second.plan.ai, undefined);
+  assert.notEqual(first.plan.contextAudit.contextId, second.plan.contextAudit.contextId);
+  assert.deepEqual(first.run.inputSnapshot, second.run.inputSnapshot);
 });
 
 test('stale edits and duplicate in-flight analysis cannot overwrite a record', async (t) => {
@@ -126,7 +186,7 @@ test('stale edits and duplicate in-flight analysis cannot overwrite a record', a
   let started; let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const ready = new Promise((resolve) => { started = resolve; });
-  const options = { fetchImpl: async () => { started(); await gate; return providerResponse(); } };
+  const options = { fetchImpl: async (_url, init) => { if (isContextAuditRequest(init)) return passedAuditResponse(init); started(); await gate; return providerResponse(); } };
   const pending = call(env, `/records/${record.id}/analyze`, { method: 'POST', body: { revision: 2 } }, options);
   await ready;
   assert.equal((await call(env, `/records/${record.id}/analyze`, { method: 'POST', body: { revision: 2 } }, options)).status, 409);

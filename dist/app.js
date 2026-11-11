@@ -400,12 +400,28 @@ function currentRun() {
   const runs = activeRuns();
   return runs.find((run) => run.id === selectedRuns.get(active?.id)) || runs[0] || null;
 }
-function aiFor(plan) { return plan?.generation?.mode === 'ai' ? plan.ai : null; }
+function aiFor(plan) { const audit = contextAuditFor(plan); return plan?.generation?.mode === 'ai' && (!audit || audit.status === 'passed') ? plan.ai : null; }
 const legalStatusNames = { conditional: '条件性建议', insufficient: '信息不足', not_applicable: '本案暂不适用' };
 const legacyLegalNotice = '本版本未保存逐条法律核验，请重新生成';
+const legacyContextAuditNotice = '未执行新增上下文审核';
+const contextAuditStatusNames = { passed: '自动审核通过（仍需人工复核）', blocked: '上下文审核未通过 · 仅保留规则方案', unavailable: '独立上下文审核未完成 · 仅保留规则方案', rules_only: '仅完成确定性规则核对' };
+const contextAuditMethods = { 'fresh-context-model-and-deterministic-preflight': '确定性前置核对 + 模型独立上下文审核', 'deterministic-preflight': '确定性前置核对', 'not-run': '未执行独立上下文审核' };
+const contextAuditReasonNames = { reported_facts_unverified: '填报事实尚未核实', conditions_require_evidence: '适用条件需证据确认', version_scope_limited: '条文版本适用范围有限', excluded_on_reported_facts: '按当时填报情况暂不适用' };
 function legalReviewFor(plan) {
   const review = plan?.legalReview;
   return review && typeof review === 'object' && !Array.isArray(review) ? review : null;
+}
+function contextAuditFor(plan) {
+  const audit = plan?.contextAudit;
+  return audit && typeof audit === 'object' && !Array.isArray(audit) ? audit : null;
+}
+function contextAuditStatus(audit) { return audit ? contextAuditStatusNames[audit.status] || '本版本审核状态未确认' : legacyContextAuditNotice; }
+function contextAuditMethod(audit) { return contextAuditMethods[audit?.method] || factText(audit?.method); }
+function contextAuditTag(audit) { return el('span', 'context-audit-status ' + (Object.hasOwn(contextAuditStatusNames, audit?.status) ? audit.status : 'not-run'), contextAuditStatus(audit)); }
+function contextAuditDetailButton() {
+  const node = button('查看审核详情', 'text-button legal-detail-link');
+  node.addEventListener('click', () => { selectReportTab('legal'); const target = document.getElementById('context-audit-details'); if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+  return node;
 }
 function legalFindingsFor(plan, action) { return (legalReviewFor(plan)?.findings || []).filter((finding) => finding.actionId === action.id); }
 function legalRecommendationFindings(review, recommendation) {
@@ -476,7 +492,12 @@ function renderLegalSummary(plan) {
     const dates = corpusVerificationDates(review);
     copy.append(el('small', '', '已核验法条库 · 按案件检索；' + (dates ? '法条核验日期 ' + dates + '；' : '') + '非实时全库查询。填报事实未核实。'));
   }
-  panel.append(copy, legalDetailButton(null, review ? '查看核对与条文' : '查看版本说明')); $('#report-legal-summary').replaceChildren(panel);
+  panel.append(copy, legalDetailButton(null, review ? '查看核对与条文' : '查看版本说明'));
+  const audit = contextAuditFor(plan); const auditPanel = el('article', 'panel context-audit-summary'); const auditCopy = el('div');
+  auditCopy.append(el('h3', '', '上下文审核结果 · 所选版本'), contextAuditTag(audit));
+  auditCopy.append(el('p', '', audit?.message || (audit ? '审核依据与结果随本版方案保存，需人工复核后使用。' : '此历史版本未保存新增上下文审核结果；重新生成会另存新版本。')));
+  auditCopy.append(el('small', '', audit ? '审核时间：' + reviewDateLabel(audit.reviewedAt) + ' · 方式：' + contextAuditMethod(audit) : '仅展示所选版本原有记录。'));
+  auditPanel.append(auditCopy, contextAuditDetailButton()); $('#report-legal-summary').replaceChildren(panel, auditPanel);
 }
 function renderClause(citation) {
   const details = el('details', 'legal-clause'); const summary = el('summary');
@@ -487,8 +508,110 @@ function renderClause(citation) {
   if (citation.officialUrl) source.append(el('span', 'official-url', citation.officialUrl));
   details.append(source); return details;
 }
+function savedAuditReferences(plan) {
+  const review = legalReviewFor(plan);
+  return { findings: new Map((review?.findings || []).map((finding) => [finding.id, finding])), facts: new Map((review?.facts || []).map((fact) => [fact.id, fact])), clauses: new Map((review?.findings || []).flatMap((finding) => (finding.citations || []).map((citation) => [citation.id, citation]))) };
+}
+function auditSectionLabel(id) {
+  const names = { analysis: '案情研判', strategy: '推进策略', communicationDraft: '沟通函草稿' };
+  if (Object.hasOwn(names, id)) return names[id];
+  let match = /^recommendation-(\d+)-advice$/.exec(id); if (match) return '第 ' + match[1] + ' 条执行补充 · 建议';
+  match = /^recommendation-(\d+)-step-(\d+)$/.exec(id); if (match) return '第 ' + match[1] + ' 条执行补充 · 步骤 ' + match[2];
+  match = /^question-(\d+)$/.exec(id); if (match) return '第 ' + match[1] + ' 项待确认问题';
+  match = /^material-(\d+)-(finding|location|uncertainty)$/.exec(id); if (match) return '第 ' + match[1] + ' 份材料 · ' + ({ finding: '识别线索', location: '识别位置', uncertainty: '识别不确定性' })[match[2]];
+  return '本版内容片段';
+}
+function auditFactReference(id, refs) { const fact = refs.facts.get(id); return fact ? id + ' · ' + fact.label + '：' + factValueText(fact) + '（' + factOrigin(fact) + '）' : id + ' · 本版本未保存对应事实'; }
+function auditClauseReference(id, refs) { const citation = refs.clauses.get(id); return citation ? id + ' · ' + [citation.lawTitle, citation.article].filter(Boolean).join(' ') + ' · 版本：' + [citation.versionLabel, citation.versionId].filter(Boolean).join(' / ') : id + ' · 本版本未保存对应条文'; }
+function renderAuditSections(audit, refs) {
+  const sections = audit.status === 'passed' && Array.isArray(audit.sectionChecks) ? audit.sectionChecks : [];
+  if (!sections.length) return null;
+  const details = el('details', 'context-audit-sections'); details.append(el('summary', '', '已审核内容与依据映射 · ' + sections.length + ' 段'), el('p', 'legal-muted', '下列片段编号、事实与条文均来自本版保存的审核记录。点击条文可查看本版完整依据。'));
+  for (const section of sections) {
+    const row = el('div', 'context-audit-section'); row.append(el('strong', '', auditSectionLabel(section.sectionId)), el('small', '', section.sectionId + ' · ' + (section.status === 'passed' ? '自动审核通过，仍需复核' : '状态未确认')));
+    const factIds = Array.isArray(section.factIds) ? section.factIds : []; row.append(el('p', '', '关联本版事实：'), factIds.length ? list(factIds.map((id) => auditFactReference(id, refs))) : el('p', 'legal-muted', '未关联事实编号；请结合该片段内容复核。'));
+    const clauseIds = Array.isArray(section.clauseIds) ? section.clauseIds : []; row.append(el('p', '', '关联本版条文：'));
+    if (!clauseIds.length) row.append(el('p', 'legal-muted', '未关联条文编号；本片段不据此确认法律权利。'));
+    else {
+      const clauses = el('ul');
+      for (const id of clauseIds) {
+        const item = el('li'); const citation = refs.clauses.get(id); const finding = [...refs.findings.values()].find((entry) => entry.citations?.some((entryCitation) => entryCitation.id === id));
+        item.append(finding ? legalDetailButton(finding, auditClauseReference(id, refs)) : el('span', '', auditClauseReference(id, refs)));
+        const link = citation && officialClauseLink(citation); if (link) item.append(link); clauses.append(item);
+      }
+      row.append(clauses);
+    }
+    details.append(row);
+  }
+  return details;
+}
+function renderContextAudit(plan) {
+  const audit = contextAuditFor(plan); const panel = el('article', 'panel legal-panel context-audit-panel'); panel.id = 'context-audit-details';
+  const heading = el('div', 'context-audit-heading'); heading.append(el('h3', '', '上下文审核结果 · 本版本记录'), contextAuditTag(audit)); panel.append(heading);
+  if (!audit) {
+    panel.append(el('p', '', legacyContextAuditNotice), el('p', 'legal-muted', '此历史版本没有保存新增上下文审核记录；法律核对仍以本版原有内容为准。重新生成将另存新版本，不补写本版审核结论。'));
+    return panel;
+  }
+  if (audit.message) panel.append(el('p', '', audit.message));
+  panel.append(legalMetadata([['审核时间', reviewDateLabel(audit.reviewedAt)], ['审核方式', contextAuditMethod(audit)], ['方式标识', audit.method], ['条文库版本', audit.corpusVersion], ['审核格式版本', audit.schemaVersion]]));
+  if (audit.contextId || audit.candidateDigest) { const identity = el('details', 'context-audit-identity'); identity.append(el('summary', '', '审核记录标识'), legalMetadata([['上下文标识', audit.contextId], ['候选内容摘要', audit.candidateDigest]])); panel.append(identity); }
+  panel.append(el('p', 'legal-muted', '确定性规则核对按固定条件关联事实与条文；模型审核由所配置模型另发独立上下文请求，进一步检查本版候选方案的事实、引用与适用说明。是否完成以本版状态及方式为准。以下仅引用本版本保存的法律核对，事实仍未核实，不等于律师审核或责任认定。'));
+  if (audit.status !== 'passed') panel.append(el('p', 'context-audit-outcome', audit.status === 'rules_only' ? '本版本未完成独立模型上下文审核，按确定性规则方案展示。' : audit.status === 'blocked' || audit.status === 'unavailable' ? '本版本按确定性规则方案展示；独立模型上下文审核尚无通过结论。' : '本版本审核状态未确认，请人工复核后使用。'));
+  if (Array.isArray(audit.issues) && audit.issues.length) { panel.append(el('h4', '', '审核问题与原因'), list(audit.issues.map((issue) => [issue.code, issue.message].filter(Boolean).join(' · ')))); }
+  const refs = savedAuditReferences(plan);
+  const sections = renderAuditSections(audit, refs); if (sections) panel.append(sections);
+  for (const check of audit.status === 'passed' && Array.isArray(audit.checks) ? audit.checks : []) {
+    const finding = refs.findings.get(check.findingId); const details = el('details', 'context-audit-check'); const summary = el('summary'); const label = el('span');
+    label.append(el('strong', '', [check.findingId, check.title || finding?.title].filter(Boolean).join(' · ')), el('small', '', '展开本版事实、审核说明与条文'));
+    summary.append(label, legalStatusTag(check)); details.append(summary);
+    const body = el('div', 'context-audit-check-body'); body.append(el('h4', '', check.rationaleOrigin === 'review-template' ? '原法律核对的适用说明' : '适用说明 · 本版记录'), el('p', '', check.rationale || '本版本未保存具体适用说明。'));
+    if (Array.isArray(check.reasonCodes) && check.reasonCodes.length) body.append(el('h4', '', '结构化审核提示'), list(check.reasonCodes.map((code) => (contextAuditReasonNames[code] || '本版审核提示') + '（' + code + '）')));
+    if (Array.isArray(check.conditions) && check.conditions.length) body.append(el('h4', '', '原核对项仍需满足的条件'), list(check.conditions));
+    if (finding) body.append(legalDetailButton(finding, '查看本版完整适用条件与证据缺口')); else body.append(el('p', 'legal-muted', '本版本未保存对应法律核对项。'));
+    body.append(el('h4', '', '关联的本版事实 · 均未核实'));
+    const factIds = Array.isArray(check.factIds) ? check.factIds : [];
+    body.append(factIds.length ? list(factIds.map((id) => { const fact = refs.facts.get(id); return fact ? id + ' · ' + fact.label + '：' + factValueText(fact) + '（' + factOrigin(fact) + '）' : id + ' · 本版本未保存对应事实'; })) : el('p', 'legal-muted', '本审核项未关联已保存的事实编号。'));
+    if (Array.isArray(check.missingEvidence) && check.missingEvidence.length) body.append(el('h4', '', '待补充或核实的证据'), list(check.missingEvidence));
+    body.append(el('h4', '', '关联条文 · 本版本原文与版本'));
+    const clauseIds = Array.isArray(check.clauseIds) ? check.clauseIds : [];
+    for (const id of clauseIds) { const citation = refs.clauses.get(id); body.append(citation ? renderClause(citation) : el('p', 'legal-muted', id + ' · 本版本未保存对应条文，不据此确认法律权利。')); }
+    if (!clauseIds.length) body.append(el('p', 'legal-muted', '本审核项未关联已保存的条文编号。'));
+    details.append(body); panel.append(details);
+  }
+  if (Array.isArray(audit.limitations) && audit.limitations.length) panel.append(el('h4', '', '审核范围与限制'), list(audit.limitations));
+  return panel;
+}
+function contextAuditTraceText(plan) {
+  const audit = contextAuditFor(plan); const lines = ['【上下文审核 · 本版本保存的结果】', '审核结果：' + contextAuditStatus(audit)];
+  if (!audit) return [...lines, '此历史版本未保存新增上下文审核记录；重新生成将另存新版本，不补写本版审核结论。'];
+  lines.push('审核时间：' + reviewDateLabel(audit.reviewedAt), '审核方式：' + contextAuditMethod(audit) + '（' + factText(audit.method) + '）', '条文库版本：' + factText(audit.corpusVersion), '审核格式版本：' + factText(audit.schemaVersion));
+  if (audit.contextId) lines.push('审核上下文标识：' + audit.contextId);
+  if (audit.candidateDigest) lines.push('候选内容摘要：' + audit.candidateDigest);
+  if (audit.message) lines.push('审核说明：' + audit.message);
+  lines.push('确定性规则核对与独立上下文模型审核的完成情况以本版状态为准；事实仍未核实，需人工复核。条文核验日期见本版逐条记录。');
+  for (const issue of Array.isArray(audit.issues) ? audit.issues : []) lines.push('审核问题：' + [issue.code, issue.message].filter(Boolean).join(' · '));
+  const refs = savedAuditReferences(plan);
+  for (const section of audit.status === 'passed' && Array.isArray(audit.sectionChecks) ? audit.sectionChecks : []) {
+    lines.push('', '已审核片段：' + auditSectionLabel(section.sectionId) + '（' + section.sectionId + '） · ' + (section.status === 'passed' ? '自动审核通过，仍需复核' : '状态未确认'));
+    const factIds = Array.isArray(section.factIds) ? section.factIds : []; lines.push(...(factIds.length ? factIds.map((id) => '关联本版事实：' + auditFactReference(id, refs)) : ['未关联事实编号；请结合该片段内容复核。']));
+    const clauseIds = Array.isArray(section.clauseIds) ? section.clauseIds : []; lines.push(...(clauseIds.length ? clauseIds.map((id) => '关联本版条文：' + auditClauseReference(id, refs) + '；完整条文及官方来源见本版法律适用核对。') : ['未关联条文编号；本片段不据此确认法律权利。']));
+  }
+  for (const check of audit.status === 'passed' && Array.isArray(audit.checks) ? audit.checks : []) {
+    lines.push('', '审核项：' + [check.findingId, check.title].filter(Boolean).join(' · ') + ' · ' + legalStatusName(check), (check.rationaleOrigin === 'review-template' ? '原法律核对的适用说明：' : '适用说明 · 本版记录：') + (check.rationale || '本版本未保存具体适用说明。'));
+    for (const code of Array.isArray(check.reasonCodes) ? check.reasonCodes : []) lines.push('结构化审核提示：' + (contextAuditReasonNames[code] || '本版审核提示') + '（' + code + '）');
+    for (const item of Array.isArray(check.conditions) ? check.conditions : []) lines.push('原核对项仍需满足的条件：' + item);
+    for (const id of Array.isArray(check.factIds) ? check.factIds : []) { const fact = refs.facts.get(id); lines.push('关联本版事实：' + id + (fact ? ' · ' + fact.label + '：' + factValueText(fact) + '（' + factOrigin(fact) + '）' : ' · 本版本未保存对应事实')); }
+    for (const id of Array.isArray(check.clauseIds) ? check.clauseIds : []) {
+      const citation = refs.clauses.get(id); lines.push('关联本版条文：' + id + (citation ? ' · ' + [citation.lawTitle, citation.article].filter(Boolean).join(' ') + ' · 版本：' + [citation.versionLabel, citation.versionId].filter(Boolean).join(' / ') + ' · 官方全文：' + factText(citation.officialUrl) + '；条文全文及完整版本信息见本版法律适用核对。' : ' · 本版本未保存对应条文'));
+    }
+    for (const item of Array.isArray(check.missingEvidence) ? check.missingEvidence : []) lines.push('待补充或核实：' + item);
+  }
+  for (const limitation of Array.isArray(audit.limitations) ? audit.limitations : []) lines.push('审核范围限制：' + limitation);
+  return lines;
+}
 function renderLegal(plan) {
   const target = $('#report-legal'); target.replaceChildren(); const review = legalReviewFor(plan);
+  target.append(renderContextAudit(plan));
   if (!review) { const panel = el('article', 'panel legal-panel'); panel.append(el('h3', '', '历史版本说明'), el('p', '', legacyLegalNotice), el('p', 'legal-muted', '当前展示所选版本原有内容；重新生成后将另存一个包含逐条法律核对的新版本。')); target.append(panel); return; }
   const overview = el('article', 'panel legal-panel'); overview.append(el('h3', '', '法律适用核对'), el('p', 'legal-scope-label', '已核验法条库 · 按案件检索 · 非实时全库查询'), el('p', '', review.coverageNote || '根据所选版本的填报信息与附件清单进行法律适用条件核对。'), legalMetadata([['适用地区', review.jurisdiction], ['核对日期', reviewDateLabel(review.reviewedAt)], ['法条核验日期', corpusVerificationDates(review) || '见条文记录'], ['条文库版本', review.corpusVersion], ['核对格式版本', review.schemaVersion]]), el('p', 'legal-muted', '以下核对随本次方案保存。用户填报及附件清单均未核实；附件存在、文字提取或图片识别不代表事实已获证明。条文核对不等于律师审核或责任认定。'));
   if (review.limitations?.length) { overview.append(el('h4', '', '核对范围与限制'), list(review.limitations)); }
@@ -791,7 +914,7 @@ function reportText() {
   lines.push(...(materials.length ? materials.map((item) => '- ' + item.name + '：' + materialDescription(item)) : ['本版本未使用附件，仅依据当时填报信息。']));
   for (const finding of ai?.materialFindings || []) lines.push('材料识别：' + (materials.find((item) => item.id === finding.attachmentId)?.name || finding.attachmentId) + '；' + finding.finding + '；位置：' + (finding.location || '待核对') + '；不确定性：' + (finding.uncertainty || '请核对原文'));
   lines.push('', '【整体推进建议】', plan.summary || '', plan.strategy || '', plan.priority?.label || '', plan.priority?.reason || '');
-  lines.push('', ...legalTraceText(plan));
+  lines.push('', ...contextAuditTraceText(plan), '', ...legalTraceText(plan));
   if (ai) lines.push('', '【执行研判 · 需人工复核】', '法律适用状态与条文依据以本版本保存的法律核对项为准。', ai.analysis || '', ai.strategy || '', ...(ai.followUpQuestions || []).map((item) => '待确认：' + item));
   for (const action of plan.actions || []) {
     const kind = adviceKind(action, review); const findings = legalFindingsFor(plan, action);
